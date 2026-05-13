@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>超星学习通 · 高级后台</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<!-- Sidebar -->
+<div id="sidebar">
+  <div class="logo">超星高级后台</div>
+  <nav>
+    <a href="#" data-page="dashboard" class="active">控制台</a>
+    <a href="#" data-page="users">用户管理</a>
+    <a href="#" data-page="study">学习中心</a>
+    <a href="#" data-page="settings">全局设置</a>
+    <a href="#" data-page="logs">系统日志</a>
+  </nav>
+  <div class="sidebar-footer">v1.6</div>
+</div>
+
+<!-- Main -->
+<div id="main">
+  <div id="header">
+    <h2 id="page-title">控制台</h2>
+    <div class="header-actions">
+      <button class="theme-btn" onclick="toggleTheme()" title="切换主题"></button>
+    </div>
+  </div>
+
+  <div id="content">
+    <!-- ===== Dashboard ===== -->
+    <div id="dashboard-page" class="page active">
+      <div class="cards">
+        <div class="stat-card accent-blue clickable" onclick="navigateTo('users')" title="点击查看用户列表">
+          <div class="stat-label">总账户数</div>
+          <div class="stat-value c-blue" id="s-users">0</div>
+          <div class="stat-sub">已配置的账号总数 →</div>
+        </div>
+        <div class="stat-card accent-orange clickable" onclick="navigateTo('study')" title="点击查看任务队列">
+          <div class="stat-label">运行中任务</div>
+          <div class="stat-value c-orange" id="s-running">0</div>
+          <div class="stat-sub">当前正在学习的任务 →</div>
+        </div>
+        <div class="stat-card accent-green clickable" onclick="switchDashTab('progress')" title="点击查看完成进度">
+          <div class="stat-label">今日完成</div>
+          <div class="stat-value c-green" id="s-done">0</div>
+          <div class="stat-sub">今天完成的学习任务 →</div>
+        </div>
+      </div>
+
+      <!-- Dashboard Sub-tabs -->
+      <div class="dash-tabs">
+        <button class="dash-tab active" data-dtab="logs" onclick="switchDashTab('logs')">章节日志</button>
+        <button class="dash-tab" data-dtab="progress" onclick="switchDashTab('progress')">学习进度</button>
+        <button class="dash-tab" data-dtab="intervention" onclick="switchDashTab('intervention')">人工接管 <span id="intervention-count" class="dash-tab-badge" style="display:none">0</span></button>
+      </div>
+
+      <div class="dash-panel active" id="dash-logs">
+        <div class="panel">
+          <div class="panel-header fb"><span>最近章节日志</span><span class="text-sm text-muted">最近 50 条记录</span></div>
+          <div class="panel-body"><div class="table-wrap"><table id="log-tbl"><thead><tr><th>用户</th><th>课程</th><th>章节</th><th>结果</th><th>时间</th></tr></thead><tbody></tbody></table></div></div>
+        </div>
+      </div>
+
+      <div class="dash-panel" id="dash-progress">
+        <div class="panel">
+          <div class="panel-header">学习进度总览</div>
+          <div class="panel-body" id="progress-list"></div>
+        </div>
+      </div>
+
+      <div class="dash-panel" id="dash-intervention">
+        <div class="panel">
+          <div class="panel-header fb"><span>需要人工接管</span><span class="text-sm text-muted">以下章节未能自动完成，需要手动处理</span></div>
+          <div class="panel-body"><div class="table-wrap"><table id="intervention-tbl"><thead><tr><th>用户</th><th>课程</th><th>章节</th><th>状态</th><th>原因</th><th>时间</th></tr></thead><tbody></tbody></table></div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== Users ===== -->
+    <div id="users-page" class="page">
+      <div class="panel">
+        <div class="panel-header"><span>用户列表</span>
+          <div class="btn-group">
+            <button class="btn sm" onclick="bulkRandomizeUserAgents()">批量随机 UA</button>
+            <button class="btn sm" onclick="importUsers()">批量导入</button>
+            <button class="btn sm primary" onclick="showAddUser()">➕ 添加用户</button>
+          </div>
+        </div>
+        <div class="panel-body"><div class="table-wrap"><table id="user-tbl"><thead><tr><th>ID</th><th>用户名</th><th>备注</th><th>速度</th><th>并发</th><th>题库</th><th>状态</th><th>操作</th></tr></thead><tbody></tbody></table></div></div>
+      </div>
+    </div>
+
+    <!-- ===== Study ===== -->
+    <div id="study-page" class="page">
+      <div class="panel">
+        <div class="panel-header">开始学习</div>
+        <div class="panel-body">
+          <div class="form-group"><label class="form-label">选择用户</label>
+            <select id="study-uid" onchange="loadCourses()"><option value="">请选择用户</option></select>
+          </div>
+          <div class="form-group"><label class="form-label">选择课程</label>
+            <input id="course-search" placeholder="搜索课程名称、教师、ID..." oninput="filterCourses()" style="margin-bottom:10px">
+            <div id="course-list" class="course-cards"><div class="empty"><div class="empty-icon"></div>请先选择用户</div></div>
+          </div>
+          <div class="form-group"><label class="form-label">选择章节 <span class="text-sm text-muted">（可选，不选则学习全部）</span></label>
+            <div class="fb" style="margin-bottom:8px">
+              <button class="btn sm" onclick="loadChapters()">加载章节列表</button>
+              <span class="text-sm text-muted" id="chapter-info"></span>
+            </div>
+            <div id="chapter-list" class="course-cards" style="max-height:240px"><div class="empty"><div class="empty-icon"></div>选择课程后可加载章节</div></div>
+          </div>
+          <button class="btn primary" onclick="startStudy()">加入学习队列</button>
+        </div>
+      </div>
+
+      <div class="panel mt">
+        <div class="panel-header fb"><span>任务队列</span><button class="btn sm ghost" onclick="loadTasks()">刷新</button></div>
+        <div class="panel-body"><div class="table-wrap"><table id="task-tbl"><thead><tr><th>ID</th><th>用户</th><th>课程</th><th>状态</th><th>开始时间</th><th>操作</th></tr></thead><tbody></tbody></table></div></div>
+      </div>
+    </div>
+
+    <!-- ===== Settings ===== -->
+    <div id="settings-page" class="page">
+      <div class="panel">
+        <div class="panel-header">全局设置</div>
+        <div class="panel-body">
+          <div class="section-title">题库配置</div>
+          <div class="form-group"><label class="form-label">题库提供商</label>
+            <select id="g-provider">
+              <option value="">不使用题库</option>
+              <option value="TikuYanxi">言溪题库</option>
+              <option value="TikuLike">LIKE 知识库</option>
+              <option value="TikuAdapter">TikuAdapter</option>
+              <option value="AI">AI 大模型 (OpenAI 格式)</option>
+              <option value="SiliconFlow">硅基流动</option>
+            </select>
+          </div>
+          <div class="form-group"><label class="form-label">Token（多个用逗号分隔）</label>
+            <input id="g-tokens" placeholder="token1,token2">
+          </div>
+          <div class="form-group"><label class="form-label">提交模式</label>
+            <select id="g-submit"><option value="false">仅保存不提交</option><option value="true">达到覆盖率自动提交</option></select>
+          </div>
+          <div class="form-group"><label class="form-label">最低覆盖率</label>
+            <input id="g-cover" type="number" step="0.1" min="0" max="1" value="0.9">
+          </div>
+          <div class="form-group"><label class="form-label">搜题延迟（秒）</label>
+            <input id="g-delay" type="number" step="0.1" value="1">
+          </div>
+
+          <div class="section-title">AI 大模型配置</div>
+          <div class="form-group"><label class="form-label">API Endpoint</label>
+            <input id="g-endpoint" placeholder="https://api.openai.com/v1">
+            <div class="form-hint">OpenAI 兼容格式的 API 地址</div>
+          </div>
+          <div class="form-group"><label class="form-label">API Key</label>
+            <input id="g-key" type="password" placeholder="sk-...">
+          </div>
+          <div class="form-group"><label class="form-label">Model</label>
+            <input id="g-model" placeholder="gpt-4o">
+          </div>
+
+          <div class="btn-group mt">
+            <button class="btn primary" onclick="saveSettings()">保存设置</button>
+            <button class="btn" onclick="openSyncModal()">同步到指定用户</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== Logs ===== -->
+    <div id="logs-page" class="page">
+      <div class="panel">
+        <div class="panel-header fb"><span>实时日志</span>
+          <div class="btn-group">
+            <span class="text-sm text-muted" id="live-status"><span class="live-dot off"></span> 未连接</span>
+            <button class="btn sm primary" onclick="toggleLiveLog()">开始监听</button>
+            <button class="btn sm ghost" onclick="loadLogs()">刷新历史</button>
+          </div>
+        </div>
+        <div class="panel-body">
+          <div class="log-panel" id="live-log-panel" style="height:420px"><span style="color:var(--c-text3)">点击「开始监听」查看实时日志...</span></div>
+        </div>
+      </div>
+      <div class="panel mt">
+        <div class="panel-header">历史日志</div>
+        <div class="panel-body"><div class="table-wrap"><table id="logs-tbl"><thead><tr><th>时间</th><th>类别</th><th>内容</th></tr></thead><tbody></tbody></table></div></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Modals -->
+<div class="overlay" id="add-modal"><div class="modal">
+  <h3>添加用户</h3>
+  <div class="form-group"><label class="form-label">用户名（手机号）</label><input id="new-uname" placeholder="请输入手机号"></div>
+  <div class="form-group"><label class="form-label">密码</label><input id="new-pwd" type="password" placeholder="请输入密码"></div>
+  <div class="form-group"><label class="form-label">备注</label><input id="new-remark" placeholder="例如：张三、专业课"></div>
+  <div class="modal-footer">
+    <button class="btn" onclick="closeModal('add-modal')">取消</button>
+    <button class="btn primary" onclick="addUser()">确认添加</button>
+  </div>
+</div></div>
+
+<div class="overlay" id="import-modal"><div class="modal">
+  <h3>批量导入用户</h3>
+  <p class="text-sm text-muted mb">上传 CSV 文件，第一行为表头：<code class="text-mono">username,password</code></p>
+  <input type="file" id="import-file" accept=".csv">
+  <div class="modal-footer">
+    <button class="btn" onclick="closeModal('import-modal')">取消</button>
+    <button class="btn primary" onclick="doImport()">开始导入</button>
+  </div>
+</div></div>
+
+<div class="overlay" id="sync-modal"><div class="modal">
+  <h3>同步题库配置</h3>
+  <div class="form-group"><label class="form-label">目标用户</label><select id="sync-uid"><option value="">请选择</option></select></div>
+  <div class="modal-footer">
+    <button class="btn" onclick="closeModal('sync-modal')">取消</button>
+    <button class="btn primary" onclick="doSync()">确认同步</button>
+  </div>
+</div></div>
+
+<div class="overlay" id="log-modal"><div class="modal" style="width:700px">
+  <h3>任务日志 <span id="log-tid" class="text-muted" style="font-weight:400"></span></h3>
+  <div class="log-panel" id="log-panel" style="height:360px"></div>
+  <div class="modal-footer"><button class="btn" onclick="closeModal('log-modal')">关闭</button></div>
+</div></div>
+
+<!-- Drawer -->
+<div class="drawer-bg" id="drawer-bg" onclick="closeDrawer()"></div>
+<div class="drawer" id="drawer">
+  <h3><span>用户配置</span><button class="drawer-close" onclick="closeDrawer()">✕</button></h3>
+  <div class="form-group"><label class="form-label">备注</label><input id="d-remark" placeholder="备注信息"></div>
+  <div class="form-group">
+    <div class="fb" style="margin-bottom:8px">
+      <label class="form-label" style="margin:0">固定 User-Agent</label>
+      <div class="btn-group">
+        <button class="btn sm ghost" type="button" onclick="fillRandomUserAgent()">随机 UA</button>
+        <button class="btn sm ghost" type="button" onclick="clearUserAgent()">清空</button>
+      </div>
+    </div>
+    <input id="d-user-agent" placeholder="留空则使用默认 UA">
+  </div>
+  <div class="form-group"><label class="form-label">视频速度（1 ~ 2）</label><input id="d-speed" type="number" step="0.1" min="1" max="2"></div>
+  <div class="form-group"><label class="form-label">同时进行章节数</label><input id="d-jobs" type="number" min="1"></div>
+  <div class="form-group"><label class="form-label">未开放章节处理</label>
+    <select id="d-notopen"><option value="retry">重试</option><option value="ask">询问</option><option value="continue">跳过</option></select>
+  </div>
+  <div class="section-title">题库配置</div>
+  <div class="form-group"><label class="form-label">题库提供商</label>
+    <select id="d-provider"><option value="">不使用</option><option value="TikuYanxi">言溪题库</option><option value="TikuLike">LIKE 知识库</option><option value="TikuAdapter">TikuAdapter</option><option value="AI">AI 大模型</option><option value="SiliconFlow">硅基流动</option></select>
+  </div>
+  <div class="form-group"><label class="form-label">Token</label><input id="d-tokens"></div>
+  <div class="form-group"><label class="form-label">提交模式</label><select id="d-submit"><option value="false">仅保存</option><option value="true">自动提交</option></select></div>
+  <div class="form-group"><label class="form-label">覆盖率</label><input id="d-cover" type="number" step="0.1" min="0" max="1" value="0.9"></div>
+
+  <div class="section-title">多模型协同</div>
+  <div class="form-group"><label class="form-label">启用多模型协同</label>
+    <select id="d-multi-model" onchange="toggleMultiModel()"><option value="false">关闭（单模型）</option><option value="true">启用（3 模型并行 + referee 裁决）</option></select>
+  </div>
+  <div id="multi-model-cfg" style="display:none">
+    <div class="section-title">模型 1 <span class="badge referee-badge">裁判</span></div>
+    <div class="form-group"><label class="form-label">Provider</label>
+      <select class="mm-provider" data-idx="0" onchange="toggleModelFields(0)"><option value="AI">AI 大模型 (OpenAI)</option><option value="SiliconFlow">硅基流动</option></select>
+    </div>
+    <div class="form-group mm-ai-fields" data-idx="0"><label class="form-label">Endpoint</label><input class="mm-endpoint" data-idx="0" placeholder="https://api.openai.com/v1"></div>
+    <div class="form-group mm-ai-fields" data-idx="0"><label class="form-label">API Key</label><input class="mm-key" data-idx="0" type="password" placeholder="sk-..."></div>
+    <div class="form-group mm-ai-fields" data-idx="0"><label class="form-label">Model</label><input class="mm-model" data-idx="0" placeholder="gpt-4o"></div>
+    <div class="form-group mm-sf-fields" data-idx="0" style="display:none"><label class="form-label">API Key</label><input class="mm-sf-key" data-idx="0" type="password" placeholder="sk-..."></div>
+    <div class="form-group mm-sf-fields" data-idx="0" style="display:none"><label class="form-label">Model</label><input class="mm-sf-model" data-idx="0" placeholder="deepseek-ai/DeepSeek-V3"></div>
+    <div class="form-group"><label class="referee-toggle"><input type="radio" name="mm-referee" value="0" checked><span class="referee-pill">⚖ 裁判</span></label></div>
+
+    <div class="section-title">模型 2</div>
+    <div class="form-group"><label class="form-label">Provider</label>
+      <select class="mm-provider" data-idx="1" onchange="toggleModelFields(1)"><option value="AI">AI 大模型 (OpenAI)</option><option value="SiliconFlow" selected>硅基流动</option></select>
+    </div>
+    <div class="form-group mm-ai-fields" data-idx="1" style="display:none"><label class="form-label">Endpoint</label><input class="mm-endpoint" data-idx="1" placeholder="https://api.openai.com/v1"></div>
+    <div class="form-group mm-ai-fields" data-idx="1" style="display:none"><label class="form-label">API Key</label><input class="mm-key" data-idx="1" type="password" placeholder="sk-..."></div>
+    <div class="form-group mm-ai-fields" data-idx="1" style="display:none"><label class="form-label">Model</label><input class="mm-model" data-idx="1" placeholder="gpt-4o"></div>
+    <div class="form-group mm-sf-fields" data-idx="1"><label class="form-label">API Key</label><input class="mm-sf-key" data-idx="1" type="password" placeholder="sk-..."></div>
+    <div class="form-group mm-sf-fields" data-idx="1"><label class="form-label">Model</label><input class="mm-sf-model" data-idx="1" placeholder="deepseek-ai/DeepSeek-V3"></div>
+    <div class="form-group"><label class="referee-toggle"><input type="radio" name="mm-referee" value="1"><span class="referee-pill">⚖ 裁判</span></label></div>
+
+    <div class="section-title">模型 3</div>
+    <div class="form-group"><label class="form-label">Provider</label>
+      <select class="mm-provider" data-idx="2" onchange="toggleModelFields(2)"><option value="AI">AI 大模型 (OpenAI)</option><option value="SiliconFlow" selected>硅基流动</option></select>
+    </div>
+    <div class="form-group mm-ai-fields" data-idx="2" style="display:none"><label class="form-label">Endpoint</label><input class="mm-endpoint" data-idx="2" placeholder="https://api.openai.com/v1"></div>
+    <div class="form-group mm-ai-fields" data-idx="2" style="display:none"><label class="form-label">API Key</label><input class="mm-key" data-idx="2" type="password" placeholder="sk-..."></div>
+    <div class="form-group mm-ai-fields" data-idx="2" style="display:none"><label class="form-label">Model</label><input class="mm-model" data-idx="2" placeholder="gpt-4o"></div>
+    <div class="form-group mm-sf-fields" data-idx="2"><label class="form-label">API Key</label><input class="mm-sf-key" data-idx="2" type="password" placeholder="sk-..."></div>
+    <div class="form-group mm-sf-fields" data-idx="2"><label class="form-label">Model</label><input class="mm-sf-model" data-idx="2" placeholder="Qwen/Qwen3-235B-A22B"></div>
+    <div class="form-group"><label class="referee-toggle"><input type="radio" name="mm-referee" value="2"><span class="referee-pill">⚖ 裁判</span></label></div>
+
+    <div class="section-title">联网搜索</div>
+    <div class="form-group"><label class="form-label">启用联网搜索</label>
+      <select id="d-search-enabled" onchange="toggleSearchConfig()"><option value="false">关闭</option><option value="true">开启</option></select>
+    </div>
+    <div id="search-cfg" style="display:none">
+      <div class="form-group"><label class="form-label">搜索提供商</label>
+        <select id="d-search-provider" onchange="toggleSearchFields()"><option value="duckduckgo">DuckDuckGo（免费）</option><option value="custom">自定义 API</option></select>
+      </div>
+      <div id="search-custom-fields" style="display:none">
+        <div class="form-group"><label class="form-label">搜索 API Endpoint</label><input id="d-search-endpoint" placeholder="https://..."></div>
+        <div class="form-group"><label class="form-label">搜索 API Key</label><input id="d-search-key" type="password" placeholder="可选"></div>
+      </div>
+      <div class="form-group"><label class="form-label">最大搜索结果数</label><input id="d-search-max" type="number" min="1" max="10" value="3"></div>
+    </div>
+  </div>
+
+  <button class="btn primary w-full mt" onclick="saveDrawer()">保存配置</button>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

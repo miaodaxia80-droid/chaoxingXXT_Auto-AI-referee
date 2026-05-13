@@ -1,0 +1,14 @@
+version: "3.8"
+
+services:
+  chaoxing:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    image: chaoxing-web:latest
+    container_name: chaoxing-web
+    ports:
+      - "5002:5002"
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
