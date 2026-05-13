@@ -1,6 +1,6 @@
 let editUid = null, sseSource = null, userCache = [], allCourses = [], liveLogSource = null;
 let chapterCache = [];  // [{id, title, has_finished, ...}]
-let appSettings = { timezone: 'Asia/Shanghai', max_concurrent_accounts: 2, course_progress_workers: 3, show_system_metrics: true };
+let appSettings = { timezone: 'Asia/Shanghai', max_concurrent_accounts: 2, course_progress_workers: 3, show_system_metrics: true, dashboard_show_remark: false };
 let courseLoadToken = 0;
 let dashboardRefreshTimer = null;
 let dashboardRefreshInFlight = false;
@@ -117,6 +117,13 @@ function formatShortTs(ts) {
   return formatted ? formatted.slice(-8) : '';
 }
 
+function dashboardUserLabel(item) {
+  if (appSettings.dashboard_show_remark && item && item.remark) {
+    return item.remark;
+  }
+  return (item && item.username) || '';
+}
+
 // --- Dashboard ---
 async function loadDashboard() {
   if (dashboardRefreshInFlight) return;
@@ -125,18 +132,19 @@ async function loadDashboard() {
     const d = await GET('/api/dashboard');
     appSettings.timezone = d.timezone || appSettings.timezone;
     appSettings.show_system_metrics = d.show_system_metrics !== false;
+    appSettings.dashboard_show_remark = d.dashboard_show_remark === true;
     document.getElementById('s-users').textContent = d.total_users;
     document.getElementById('s-running').textContent = d.running_tasks;
     document.getElementById('s-done').textContent = d.today_done || 0;
 
     document.querySelector('#log-tbl tbody').innerHTML = (d.recent_logs||[]).map(l => {
       const label = l.result==='success'?'成功':l.result==='error'?'失败':l.result==='skipped'?'跳过':l.result;
-      return '<tr><td>'+esc(l.username)+'</td><td>'+esc(l.course_title)+'</td><td>'+esc(l.chapter_title)+'</td><td><span class="badge '+l.result+'">'+label+'</span></td><td>'+formatTs(l.ts)+'</td></tr>';
+      return '<tr><td>'+esc(dashboardUserLabel(l))+'</td><td>'+esc(l.course_title)+'</td><td>'+esc(l.chapter_title)+'</td><td><span class="badge '+l.result+'">'+label+'</span></td><td>'+formatTs(l.ts)+'</td></tr>';
     }).join('') || '<tr><td colspan="5" class="empty">暂无数据</td></tr>';
 
     document.getElementById('progress-list').innerHTML = (d.progress||[]).map(p => {
       const pct = p.total_chapters > 0 ? Math.round(p.done_chapters / p.total_chapters * 100) : 0;
-      return '<div style="margin-bottom:12px"><div class="fb" style="margin-bottom:4px"><span style="font-size:13px">'+esc(p.username)+' · '+esc(p.course_title)+'</span><span style="font-size:12px;color:var(--text2)">'+(p.done_chapters||0)+'/'+(p.total_chapters||0)+' <span class="badge '+p.status+'">'+p.status+'</span></span></div><div class="pb-bar"><div class="pb-fill" style="width:'+pct+'%"></div></div></div>';
+      return '<div style="margin-bottom:12px"><div class="fb" style="margin-bottom:4px"><span style="font-size:13px">'+esc(dashboardUserLabel(p))+' · '+esc(p.course_title)+'</span><span style="font-size:12px;color:var(--text2)">'+(p.done_chapters||0)+'/'+(p.total_chapters||0)+' <span class="badge '+p.status+'">'+p.status+'</span></span></div><div class="pb-bar"><div class="pb-fill" style="width:'+pct+'%"></div></div></div>';
     }).join('') || '<div class="empty">暂无进度数据</div>';
 
     var panel = document.getElementById('system-status-panel');
@@ -185,8 +193,20 @@ async function loadIntervention() {
   }
   tbody.innerHTML = items.map(i => {
     var label = i.result==='error'?'失败':i.result==='unsubmitted'?'未提交':'跳过';
-    return '<tr><td>'+esc(i.username)+'</td><td>'+esc(i.course_title)+'</td><td>'+esc(i.chapter_title)+'</td><td><span class="badge '+i.result+'">'+label+'</span></td><td style="font-size:12px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(i.message||'')+'</td><td style="white-space:nowrap">'+formatTs(i.ts, false)+'</td><td><button class="btn sm ghost" onclick="clearIntervention('+i.id+')">清除</button></td></tr>';
+    return '<tr><td>'+esc(dashboardUserLabel(i))+'</td><td>'+esc(i.course_title)+'</td><td>'+esc(i.chapter_title)+'</td><td><span class="badge '+i.result+'">'+label+'</span></td><td style="font-size:12px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(i.message||'')+'</td><td style="white-space:nowrap">'+formatTs(i.ts, false)+'</td><td><button class="btn sm ghost" onclick="clearIntervention('+i.id+')">清除</button></td></tr>';
   }).join('');
+}
+
+async function clearDashboardLogs() {
+  if (!confirm('确认清空首页章节日志？')) return;
+  await POST('/api/dashboard/logs/clear');
+  loadDashboard();
+}
+
+async function clearDashboardProgress() {
+  if (!confirm('确认清空首页学习进度历史？正在运行中的任务不会受影响。')) return;
+  await POST('/api/dashboard/progress/clear');
+  loadDashboard();
 }
 
 async function clearIntervention(id) {
@@ -541,12 +561,12 @@ async function loadTasks() {
     queueState = '等待时间段';
   }
   document.getElementById('queue-state-text').textContent = queueState + ' · ' + (queue.active || 0) + ' 运行 / ' + (queue.pending || 0) + ' 等待';
-  document.getElementById('queue-pause-btn').disabled = !!queue.paused;
-  document.getElementById('queue-resume-btn').disabled = !queue.paused;
+  var toggleBtn = document.getElementById('queue-toggle-btn');
+  toggleBtn.textContent = queue.paused ? '恢复队列' : '暂停队列';
   document.querySelector('#task-tbl tbody').innerHTML = tasks.map(t => {
     var statusLabel = t.status==='stopped'?'已停止':t.status==='running'?'运行中':t.status==='done'?'完成':t.status==='error'?'错误':t.status;
     var stopBtn = t.status==='running' ? '<button class="btn sm danger" onclick="stopTask('+t.id+')">停止</button>' : '';
-    return '<tr><td>'+t.id+'</td><td>'+esc(t.username||'')+'</td><td>'+esc(t.course_title)+'</td><td><span class="badge '+t.status+'">'+statusLabel+'</span></td><td>'+formatTs(t.started_at)+'</td><td class="flex"><button class="btn sm" onclick="viewLog('+t.id+')">日志</button>'+stopBtn+'</td></tr>';
+    return '<tr><td>'+t.id+'</td><td>'+esc(t.username||'')+'</td><td>'+esc(t.course_title)+'</td><td><span class="badge '+t.status+'">'+statusLabel+'</span></td><td>'+formatTs(t.started_at)+'</td><td class="flex"><button class="btn sm" onclick="viewLog('+t.id+')">日志</button>'+stopBtn+' <button class="btn sm ghost" onclick="deleteTask('+t.id+')">删除</button></td></tr>';
   }).join('') || '<tr><td colspan="6" class="empty">暂无任务</td></tr>';
 }
 
@@ -555,14 +575,23 @@ async function stopTask(id) {
   loadTasks();
 }
 
-async function pauseQueue() {
-  await POST('/api/study/queue/pause');
+async function toggleQueuePause() {
+  var queue = await GET('/api/study/queue/status');
+  await POST(queue && queue.paused ? '/api/study/queue/resume' : '/api/study/queue/pause');
   loadTasks();
   loadDashboard();
 }
 
-async function resumeQueue() {
-  await POST('/api/study/queue/resume');
+async function clearQueue() {
+  if (!confirm('确认清空任务队列？这会结束队列中的任务。')) return;
+  await POST('/api/study/queue/clear');
+  loadTasks();
+  loadDashboard();
+}
+
+async function deleteTask(id) {
+  if (!confirm('确认删除这个任务？如果任务正在运行，会先发送停止信号。')) return;
+  await DEL('/api/study/task/' + id);
   loadTasks();
   loadDashboard();
 }
@@ -594,6 +623,7 @@ async function loadSettings() {
   document.getElementById('g-max-accounts').value = s.max_concurrent_accounts || 2;
   document.getElementById('g-progress-workers').value = s.course_progress_workers || 3;
   document.getElementById('g-show-system-metrics').value = s.show_system_metrics === false ? 'false' : 'true';
+  document.getElementById('g-dashboard-show-remark').value = s.dashboard_show_remark === true ? 'true' : 'false';
   document.getElementById('g-run-window-enabled').value = s.run_window_enabled === true ? 'true' : 'false';
   document.getElementById('g-run-window-start').value = s.run_window_start || '08:00';
   document.getElementById('g-run-window-end').value = s.run_window_end || '23:00';
@@ -613,6 +643,7 @@ async function saveSettings() {
     max_concurrent_accounts: parseInt(document.getElementById('g-max-accounts').value, 10) || 2,
     course_progress_workers: parseInt(document.getElementById('g-progress-workers').value, 10) || 3,
     show_system_metrics: document.getElementById('g-show-system-metrics').value === 'true',
+    dashboard_show_remark: document.getElementById('g-dashboard-show-remark').value === 'true',
     run_window_enabled: document.getElementById('g-run-window-enabled').value === 'true',
     run_window_start: document.getElementById('g-run-window-start').value || '08:00',
     run_window_end: document.getElementById('g-run-window-end').value || '23:00',

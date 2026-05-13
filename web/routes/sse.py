@@ -1,8 +1,7 @@
-import queue
 import json
+import time
 from flask import Blueprint, Response
-from web.models import get_chapter_logs, get_task
-from web.tasks import subscribe_sse, unsubscribe_sse, subscribe_live_log, unsubscribe_live_log
+from web.models import get_chapter_logs, get_operation_logs_after, get_task
 
 sse_bp = Blueprint('sse', __name__)
 
@@ -13,27 +12,27 @@ def stream(task_id):
         return Response('not found', status=404)
 
     def generate():
-        q = queue.Queue()
-        subscribe_sse(task_id, q)
+        last_id = 0
+        heartbeat_at = time.monotonic()
         for log in get_chapter_logs(task_id):
+            last_id = log['id']
             yield "data: " + json.dumps(log) + "\n\n"
-        if task['status'] in ('done', 'error', 'stopped'):
-            yield "data: null\n\n"
-            unsubscribe_sse(task_id, q)
-            return
-        try:
-            while True:
-                try:
-                    item = q.get(timeout=30)
-                except queue.Empty:
-                    yield ": keepalive\n\n"
-                    continue
-                if item is None:
-                    yield "data: null\n\n"
-                    break
+
+        while True:
+            current = get_task(task_id)
+            new_logs = get_chapter_logs(task_id, after_id=last_id)
+            for item in new_logs:
+                last_id = item['id']
                 yield "data: " + json.dumps(item) + "\n\n"
-        finally:
-            unsubscribe_sse(task_id, q)
+
+            if current and current['status'] in ('done', 'error', 'stopped') and not new_logs:
+                yield "data: null\n\n"
+                return
+
+            if time.monotonic() - heartbeat_at >= 30:
+                heartbeat_at = time.monotonic()
+                yield ": keepalive\n\n"
+            time.sleep(1)
 
     return Response(generate(), mimetype='text/event-stream',
                     headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
@@ -42,20 +41,21 @@ def stream(task_id):
 @sse_bp.route('/api/log-stream')
 def log_stream():
     def generate():
-        q = queue.Queue()
-        history = subscribe_live_log(q)
-        # send recent history first (no drain from shared queue)
-        for item in history:
+        last_id = 0
+        heartbeat_at = time.monotonic()
+        for item in get_operation_logs_after():
+            last_id = item['id']
             yield "data: " + json.dumps(item) + "\n\n"
-        try:
-            while True:
-                try:
-                    item = q.get(timeout=30)
-                    yield "data: " + json.dumps(item) + "\n\n"
-                except queue.Empty:
-                    yield ": keepalive\n\n"
-        finally:
-            unsubscribe_live_log(q)
+
+        while True:
+            items = get_operation_logs_after(last_id)
+            for item in items:
+                last_id = item['id']
+                yield "data: " + json.dumps(item) + "\n\n"
+            if time.monotonic() - heartbeat_at >= 30:
+                heartbeat_at = time.monotonic()
+                yield ": keepalive\n\n"
+            time.sleep(1)
 
     return Response(generate(), mimetype='text/event-stream',
                     headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})

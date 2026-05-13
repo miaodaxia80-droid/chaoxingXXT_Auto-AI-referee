@@ -11,6 +11,7 @@ DEFAULT_SETTINGS = {
     "max_concurrent_accounts": 2,
     "course_progress_workers": 3,
     "show_system_metrics": True,
+    "dashboard_show_remark": False,
     "scheduler_paused": False,
     "run_window_enabled": False,
     "run_window_start": "08:00",
@@ -40,6 +41,9 @@ CREATE TABLE IF NOT EXISTS study_tasks (
   course_id TEXT,
   course_title TEXT,
   status TEXT DEFAULT 'pending',
+  total_chapters INTEGER DEFAULT 0,
+  dashboard_hidden INTEGER DEFAULT 0,
+  queue_hidden INTEGER DEFAULT 0,
   started_at TEXT,
   finished_at TEXT,
   FOREIGN KEY(user_id) REFERENCES users(id)
@@ -51,6 +55,7 @@ CREATE TABLE IF NOT EXISTS chapter_logs (
   result TEXT,
   message TEXT,
   cleared INTEGER DEFAULT 0,
+  dashboard_hidden INTEGER DEFAULT 0,
   ts TEXT,
   FOREIGN KEY(task_id) REFERENCES study_tasks(id)
 );
@@ -76,7 +81,11 @@ def init_db():
         conn.execute("PRAGMA journal_mode=WAL")
         conn.executescript(SCHEMA)
         _ensure_column(conn, "users", "user_agent", "TEXT DEFAULT ''")
+        _ensure_column(conn, "study_tasks", "total_chapters", "INTEGER DEFAULT 0")
+        _ensure_column(conn, "study_tasks", "dashboard_hidden", "INTEGER DEFAULT 0")
+        _ensure_column(conn, "study_tasks", "queue_hidden", "INTEGER DEFAULT 0")
         _ensure_column(conn, "chapter_logs", "cleared", "INTEGER DEFAULT 0")
+        _ensure_column(conn, "chapter_logs", "dashboard_hidden", "INTEGER DEFAULT 0")
 
 
 def _normalize_setting_value(key, value):
@@ -86,7 +95,7 @@ def _normalize_setting_value(key, value):
         except (TypeError, ValueError):
             value = DEFAULT_SETTINGS[key]
         return max(1, value)
-    if key in {"show_system_metrics", "scheduler_paused", "run_window_enabled"}:
+    if key in {"show_system_metrics", "dashboard_show_remark", "scheduler_paused", "run_window_enabled"}:
         if isinstance(value, str):
             return value.strip().lower() in {"1", "true", "yes", "on"}
         return bool(value)
@@ -219,10 +228,18 @@ def delete_user(uid):
 def create_task(user_id, course_id, course_title):
     with get_conn() as conn:
         cur = conn.execute(
-            "INSERT INTO study_tasks (user_id,course_id,course_title,status,started_at,finished_at) VALUES (?,?,?,'pending',NULL,NULL)",
+            "INSERT INTO study_tasks (user_id,course_id,course_title,status,total_chapters,started_at,finished_at) VALUES (?,?,?,'pending',0,NULL,NULL)",
             (user_id, course_id, course_title)
         )
         return cur.lastrowid
+
+
+def update_task_total_chapters(task_id, total_chapters):
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE study_tasks SET total_chapters=? WHERE id=?",
+            (max(0, int(total_chapters or 0)), task_id),
+        )
 
 def update_task_status(task_id, status):
     with get_conn() as conn:
@@ -250,7 +267,10 @@ def reconcile_incomplete_tasks():
 def get_tasks(limit=50):
     with get_conn() as conn:
         rows = conn.execute(
-            "SELECT t.*,u.username FROM study_tasks t LEFT JOIN users u ON t.user_id=u.id ORDER BY t.id DESC LIMIT ?",
+            "SELECT t.*,u.username FROM study_tasks t "
+            "LEFT JOIN users u ON t.user_id=u.id "
+            "WHERE COALESCE(t.queue_hidden, 0)=0 "
+            "ORDER BY t.id DESC LIMIT ?",
             (limit,)
         ).fetchall()
         return [dict(r) for r in rows]
@@ -262,8 +282,8 @@ def get_task(task_id):
 def add_chapter_log(task_id, chapter_title, result, message=''):
     with get_conn() as conn:
         conn.execute(
-            "INSERT INTO chapter_logs (task_id,chapter_title,result,message,cleared,ts) VALUES (?,?,?,?,?,?)",
-            (task_id, chapter_title, result, message, 0, now_iso(conn))
+            "INSERT INTO chapter_logs (task_id,chapter_title,result,message,cleared,dashboard_hidden,ts) VALUES (?,?,?,?,?,?,?)",
+            (task_id, chapter_title, result, message, 0, 0, now_iso(conn))
         )
 
 def get_chapter_logs(task_id, after_id=0):
@@ -276,20 +296,22 @@ def get_chapter_logs(task_id, after_id=0):
 def get_recent_logs(limit=100):
     with get_conn() as conn:
         return [dict(r) for r in conn.execute(
-            "SELECT cl.*,st.course_title,u.username FROM chapter_logs cl "
+            "SELECT cl.*,st.course_title,u.username,u.remark FROM chapter_logs cl "
             "JOIN study_tasks st ON cl.task_id=st.id "
             "JOIN users u ON st.user_id=u.id "
+            "WHERE COALESCE(cl.dashboard_hidden, 0)=0 "
             "ORDER BY cl.id DESC LIMIT ?", (limit,)
         ).fetchall()]
 
 def get_progress():
     with get_conn() as conn:
         return [dict(r) for r in conn.execute(
-            "SELECT u.username, st.course_title, st.status, st.started_at, st.finished_at, "
-            "COUNT(cl.id) as total_chapters, "
+            "SELECT u.username, u.remark, st.course_title, st.status, st.started_at, st.finished_at, "
+            "CASE WHEN COALESCE(st.total_chapters, 0) > 0 THEN st.total_chapters ELSE COUNT(cl.id) END as total_chapters, "
             "SUM(CASE WHEN cl.result='success' THEN 1 ELSE 0 END) as done_chapters "
             "FROM study_tasks st JOIN users u ON st.user_id=u.id "
             "LEFT JOIN chapter_logs cl ON cl.task_id=st.id "
+            "WHERE COALESCE(st.dashboard_hidden, 0)=0 "
             "GROUP BY st.id ORDER BY st.id DESC LIMIT 100"
         ).fetchall()]
 
@@ -321,16 +343,42 @@ def get_operation_logs(limit=200):
             "SELECT * FROM operation_logs ORDER BY id DESC LIMIT ?", (limit,)
         ).fetchall()]
 
+
+def get_operation_logs_after(after_id=0, limit=200):
+    with get_conn() as conn:
+        return [dict(r) for r in conn.execute(
+            "SELECT * FROM operation_logs WHERE id>? ORDER BY id LIMIT ?",
+            (after_id, limit),
+        ).fetchall()]
+
 def get_intervention_needed():
     with get_conn() as conn:
         return [dict(r) for r in conn.execute(
-            "SELECT cl.*,st.course_title,u.username FROM chapter_logs cl "
+            "SELECT cl.*,st.course_title,u.username,u.remark FROM chapter_logs cl "
             "JOIN study_tasks st ON cl.task_id=st.id "
             "JOIN users u ON st.user_id=u.id "
             "WHERE cl.result IN ('error','skipped','unsubmitted') AND cl.chapter_title != '' "
             "AND COALESCE(cl.cleared, 0)=0 "
             "ORDER BY cl.id DESC LIMIT 100"
         ).fetchall()]
+
+
+def clear_dashboard_logs():
+    with get_conn() as conn:
+        conn.execute("UPDATE chapter_logs SET dashboard_hidden=1 WHERE COALESCE(dashboard_hidden, 0)=0")
+
+
+def clear_dashboard_progress():
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE study_tasks SET dashboard_hidden=1 "
+            "WHERE status IN ('done', 'error', 'stopped') AND COALESCE(dashboard_hidden, 0)=0"
+        )
+
+
+def hide_task_from_queue(task_id):
+    with get_conn() as conn:
+        conn.execute("UPDATE study_tasks SET queue_hidden=1 WHERE id=?", (task_id,))
 
 
 def clear_intervention(log_id):

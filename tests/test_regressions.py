@@ -9,6 +9,7 @@ from unittest import mock
 from api.base import Account, Chaoxing, SessionManager, StudyResult
 import main
 from web import create_app, models
+from web import tasks as web_tasks
 from web.tiku_config import build_effective_tiku_config
 
 
@@ -23,6 +24,15 @@ class RegressionTests(unittest.TestCase):
         models.init_db()
         self.app = create_app()
         self.client = self.app.test_client()
+        self.addCleanup(self._reset_scheduler_state)
+
+    def _reset_scheduler_state(self):
+        with web_tasks._scheduler_cond:
+            web_tasks._pending_tasks.clear()
+            web_tasks._active_tasks.clear()
+            web_tasks._active_user_ids.clear()
+            web_tasks._queue_hide_on_finish.clear()
+            web_tasks._stop_events.clear()
 
     def _restore_db_path(self):
         models.DB_PATH = self.original_db_path
@@ -145,6 +155,76 @@ class RegressionTests(unittest.TestCase):
         resumed = self.client.get("/api/study/queue/status").get_json()
         self.assertFalse(resumed["paused"])
 
+    def test_deleting_task_hides_it_from_queue_list(self):
+        models.create_user({"username": "demo", "password": "pw"})
+        task_id = models.create_task(1, "course-1", "Course 1")
+
+        response = self.client.delete(f"/api/study/task/{task_id}")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.client.get("/api/study/tasks").get_json(), [])
+
+    def test_clearing_queue_hides_visible_tasks(self):
+        models.create_user({"username": "demo", "password": "pw"})
+        models.create_task(1, "course-1", "Course 1")
+        models.create_task(1, "course-2", "Course 2")
+
+        response = self.client.post("/api/study/queue/clear")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.client.get("/api/study/tasks").get_json(), [])
+
+    def test_force_stopping_active_task_releases_user_slot(self):
+        class FakeProcess:
+            def __init__(self):
+                self.alive = True
+                self.exitcode = None
+
+            def is_alive(self):
+                return self.alive
+
+            def terminate(self):
+                self.alive = False
+                self.exitcode = -15
+
+            def join(self, timeout=None):
+                return None
+
+            def kill(self):
+                self.alive = False
+                self.exitcode = -9
+
+        class FakeEvent:
+            def __init__(self):
+                self.is_stopped = False
+
+            def set(self):
+                self.is_stopped = True
+
+        models.create_user({"username": "demo", "password": "pw"})
+        task_id = models.create_task(1, "course-1", "Course 1")
+        models.update_task_status(task_id, "running")
+        process = FakeProcess()
+        stop_event = FakeEvent()
+
+        with web_tasks._scheduler_cond:
+            web_tasks._active_tasks[task_id] = {
+                "process": process,
+                "stop_event": stop_event,
+                "user_id": 1,
+                "course_title": "Course 1",
+                "stopping": False,
+            }
+            web_tasks._active_user_ids.add(1)
+            web_tasks._stop_events[task_id] = stop_event
+
+        web_tasks.stop_task(task_id)
+
+        self.assertTrue(stop_event.is_stopped)
+        self.assertFalse(process.is_alive())
+        self.assertEqual(models.get_task(task_id)["status"], "stopped")
+        with web_tasks._scheduler_cond:
+            self.assertNotIn(task_id, web_tasks._active_tasks)
+            self.assertNotIn(1, web_tasks._active_user_ids)
+
     def test_user_ai_config_can_fall_back_to_global_defaults(self):
         settings = {
             "tiku_config": {
@@ -180,6 +260,30 @@ class RegressionTests(unittest.TestCase):
         cleared = self.client.get("/api/intervention").get_json()
         self.assertEqual(cleared, [])
 
+    def test_dashboard_logs_can_be_cleared_without_deleting_rows(self):
+        models.create_user({"username": "demo", "password": "pw", "remark": "测试账号"})
+        task_id = models.create_task(1, "course-1", "Course 1")
+        models.add_chapter_log(task_id, "Chapter 1", "success", "")
+
+        before = models.get_recent_logs()
+        self.assertEqual(len(before), 1)
+
+        response = self.client.post("/api/dashboard/logs/clear")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(models.get_recent_logs(), [])
+
+    def test_dashboard_progress_can_be_cleared_for_finished_tasks(self):
+        models.create_user({"username": "demo", "password": "pw"})
+        task_id = models.create_task(1, "course-1", "Course 1")
+        models.update_task_status(task_id, "done")
+
+        before = models.get_progress()
+        self.assertEqual(len(before), 1)
+
+        response = self.client.post("/api/dashboard/progress/clear")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(models.get_progress(), [])
+
     def test_task_timestamps_follow_status_transitions(self):
         models.create_user({"username": "demo", "password": "pw"})
         task_id = models.create_task(1, "course-1", "Course 1")
@@ -200,6 +304,16 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(stopped["status"], "stopped")
         self.assertEqual(stopped["started_at"], running["started_at"])
         self.assertIsNotNone(stopped["finished_at"])
+
+    def test_progress_uses_stored_total_chapters(self):
+        models.create_user({"username": "demo", "password": "pw"})
+        task_id = models.create_task(1, "course-1", "Course 1")
+        models.update_task_total_chapters(task_id, 50)
+        models.add_chapter_log(task_id, "Chapter 1", "success", "")
+
+        progress = models.get_progress()
+        self.assertEqual(progress[0]["done_chapters"], 1)
+        self.assertEqual(progress[0]["total_chapters"], 50)
 
     def test_process_chapter_propagates_stopped_result(self):
         callbacks = []

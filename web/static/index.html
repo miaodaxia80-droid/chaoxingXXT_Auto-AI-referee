@@ -85,14 +85,23 @@
 
       <div class="dash-panel active" id="dash-logs">
         <div class="panel">
-          <div class="panel-header fb"><span>最近章节日志</span><span class="text-sm text-muted">最近 50 条记录</span></div>
+          <div class="panel-header fb">
+            <span>最近章节日志</span>
+            <div class="btn-group">
+              <span class="text-sm text-muted">最近 50 条记录</span>
+              <button class="btn sm ghost" onclick="clearDashboardLogs()">清空</button>
+            </div>
+          </div>
           <div class="panel-body"><div class="table-wrap"><table id="log-tbl"><thead><tr><th>用户</th><th>课程</th><th>章节</th><th>结果</th><th>时间</th></tr></thead><tbody></tbody></table></div></div>
         </div>
       </div>
 
       <div class="dash-panel" id="dash-progress">
         <div class="panel">
-          <div class="panel-header">学习进度总览</div>
+          <div class="panel-header fb">
+            <span>学习进度总览</span>
+            <button class="btn sm ghost" onclick="clearDashboardProgress()">清空</button>
+          </div>
           <div class="panel-body" id="progress-list"></div>
         </div>
       </div>
@@ -157,8 +166,8 @@
           <span>任务队列</span>
           <div class="btn-group">
             <span class="text-sm text-muted" id="queue-state-text">检测中...</span>
-            <button class="btn sm ghost" id="queue-pause-btn" onclick="pauseQueue()">暂停队列</button>
-            <button class="btn sm ghost" id="queue-resume-btn" onclick="resumeQueue()">恢复队列</button>
+            <button class="btn sm ghost" id="queue-toggle-btn" onclick="toggleQueuePause()">暂停队列</button>
+            <button class="btn sm ghost danger" onclick="clearQueue()">清空队列</button>
             <button class="btn sm ghost" onclick="loadTasks()">刷新</button>
           </div>
         </div>
@@ -188,6 +197,13 @@
               <option value="false">关闭</option>
             </select>
             <div class="form-hint">关闭后首页不再展示 CPU、温度、内存和队列概览。</div>
+          </div>
+          <div class="form-group"><label class="form-label">首页用户显示备注</label>
+            <select id="g-dashboard-show-remark">
+              <option value="false">显示手机号</option>
+              <option value="true">优先显示备注</option>
+            </select>
+            <div class="form-hint">开启后首页的章节日志、学习进度和人工接管优先显示备注，没有备注时仍显示手机号。</div>
           </div>
           <div class="form-group"><label class="form-label">启用运行时间段</label>
             <select id="g-run-window-enabled">

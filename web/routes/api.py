@@ -14,13 +14,15 @@ from web import models
 from web.models import (
     add_operation_log,
     clear_all_interventions,
+    clear_dashboard_logs,
+    clear_dashboard_progress,
     clear_intervention,
     count_tasks_completed_today,
     get_intervention_needed,
     get_operation_logs,
 )
 from web.system_metrics import get_system_metrics
-from web.tasks import get_scheduler_stats, set_scheduler_paused, start_task, stop_task
+from web.tasks import clear_queue, delete_task, get_scheduler_stats, set_scheduler_paused, start_task, stop_task
 from web.tiku_config import build_effective_tiku_config
 
 api_bp = Blueprint('api', __name__)
@@ -122,6 +124,7 @@ def dashboard():
         today_done=count_tasks_completed_today(),
         timezone=settings.get('timezone'),
         show_system_metrics=settings.get('show_system_metrics', True),
+        dashboard_show_remark=settings.get('dashboard_show_remark', False),
         scheduler=scheduler,
         recent_logs=models.get_recent_logs(50),
         progress=models.get_progress(),
@@ -265,6 +268,13 @@ def study_stop(task_id):
     return jsonify(ok=True)
 
 
+@api_bp.route('/api/study/task/<int:task_id>', methods=['DELETE'])
+def study_delete(task_id):
+    delete_task(task_id)
+    add_operation_log('study', f"删除任务 #{task_id}")
+    return jsonify(ok=True)
+
+
 @api_bp.route('/api/study/tasks')
 def study_tasks():
     return jsonify(models.get_tasks())
@@ -286,6 +296,13 @@ def study_queue_pause():
 def study_queue_resume():
     set_scheduler_paused(False)
     add_operation_log('study', '任务队列已恢复')
+    return jsonify(ok=True)
+
+
+@api_bp.route('/api/study/queue/clear', methods=['POST'])
+def study_queue_clear():
+    clear_queue()
+    add_operation_log('study', '任务队列已清空')
     return jsonify(ok=True)
 
 
@@ -329,4 +346,18 @@ def dismiss_intervention(log_id):
 def dismiss_all_interventions():
     clear_all_interventions()
     add_operation_log('intervention', '清空了全部人工接管记录')
+    return jsonify(ok=True)
+
+
+@api_bp.route('/api/dashboard/logs/clear', methods=['POST'])
+def clear_dashboard_logs_route():
+    clear_dashboard_logs()
+    add_operation_log('dashboard', '清空了首页章节日志')
+    return jsonify(ok=True)
+
+
+@api_bp.route('/api/dashboard/progress/clear', methods=['POST'])
+def clear_dashboard_progress_route():
+    clear_dashboard_progress()
+    add_operation_log('dashboard', '清空了首页学习进度')
     return jsonify(ok=True)

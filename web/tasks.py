@@ -1,6 +1,7 @@
 import os
 import sys
 import threading
+import multiprocessing
 from datetime import datetime, time as dt_time
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -15,17 +16,21 @@ from web.models import (
     add_operation_log,
     create_task,
     get_settings,
+    get_task,
     get_timezone_name,
     get_user,
+    hide_task_from_queue,
     now_iso,
     set_settings,
+    update_task_total_chapters,
     update_task_status,
 )
 from web.tiku_config import build_effective_tiku_config
 
-# task_id -> threading.Event (set to stop)
-_stop_events: dict[int, threading.Event] = {}
-# task_id -> list of SSE queues (for chapter progress)
+# task_id -> process stop event
+_MP_CTX = multiprocessing.get_context("spawn")
+_stop_events: dict[int, object] = {}
+# task_id -> list of SSE queues (legacy, stream now polls DB)
 _sse_queues: dict[int, list] = {}
 # Global live log subscribers for web UI broadcast
 _live_log_subscribers: list = []          # list of queue.Queue, one per SSE client
@@ -36,6 +41,7 @@ _live_log_history: list = []              # ring buffer of recent messages (max 
 _pending_tasks: list[dict] = []
 _active_tasks: dict[int, dict] = {}
 _active_user_ids: set[int] = set()
+_queue_hide_on_finish: set[int] = set()
 _scheduler_running = False
 _scheduler_cond = threading.Condition()
 
@@ -118,6 +124,12 @@ def _emit_live(category, message):
     payload = {'category': category, 'message': message, 'ts': _ts()}
     add_operation_log(category, message)
     _broadcast_log(payload)
+
+
+def _ensure_process_runtime_env():
+    from web import models
+
+    os.environ["DB_PATH"] = models.DB_PATH
 
 
 def _get_max_concurrent_accounts():
@@ -223,6 +235,17 @@ def _build_chaoxing(user: dict) -> Chaoxing:
     return Chaoxing(account=account, tiku=tiku, query_delay=float(tiku_conf.get('delay', 0)))
 
 
+def _task_process_entry(task_payload: dict, stop_event):
+    _run_task(
+        task_payload['task_id'],
+        task_payload['user_id'],
+        task_payload['course_id'],
+        task_payload['course_title'],
+        stop_event,
+        task_payload.get('chapter_ids'),
+    )
+
+
 def _run_task(task_id: int, user_id: int, course_id: str, course_title: str, stop_event: threading.Event,
               chapter_ids: list = None):
     update_task_status(task_id, 'running')
@@ -246,6 +269,10 @@ def _run_task(task_id: int, user_id: int, course_id: str, course_title: str, sto
         if not course:
             raise ValueError(f"Course {course_id} not found")
 
+        point_list = cx.get_course_point(course['courseId'], course['clazzId'], course['cpi'])
+        all_points = point_list.get('points', [])
+        update_task_total_chapters(task_id, len(all_points))
+
         config = {
             'speed': float(user.get('speed', 1.0)),
             'jobs': int(user.get('jobs', 4)),
@@ -254,9 +281,8 @@ def _run_task(task_id: int, user_id: int, course_id: str, course_title: str, sto
         }
 
         if chapter_ids:
-            point_list = cx.get_course_point(course['courseId'], course['clazzId'], course['cpi'])
-            all_points = point_list.get('points', [])
             selected = [p for p in all_points if p['id'] in chapter_ids]
+            update_task_total_chapters(task_id, len(selected))
             _emit_live('study', f'选择了 {len(selected)}/{len(all_points)} 个章节')
             original_gcp = cx.get_course_point
 
@@ -311,21 +337,62 @@ def _run_task(task_id: int, user_id: int, course_id: str, course_title: str, sto
                 pass
 
 
-def _task_runner(task: dict, stop_event: threading.Event):
-    try:
-        _run_task(
-            task['task_id'],
-            task['user_id'],
-            task['course_id'],
-            task['course_title'],
-            stop_event,
-            task.get('chapter_ids'),
-        )
-    finally:
-        with _scheduler_cond:
-            _active_tasks.pop(task['task_id'], None)
-            _active_user_ids.discard(task['user_id'])
-            _scheduler_cond.notify_all()
+def _finalize_active_task_locked(task_id: int, forced_status: str | None = None):
+    task_info = _active_tasks.pop(task_id, None)
+    if not task_info:
+        return
+
+    _active_user_ids.discard(task_info['user_id'])
+    _stop_events.pop(task_id, None)
+
+    task = get_task(task_id)
+    current_status = task['status'] if task else None
+    if forced_status and current_status not in ('done', 'error', 'stopped'):
+        update_task_status(task_id, forced_status)
+    elif current_status in ('pending', 'running'):
+        if task_info.get('stopping'):
+            update_task_status(task_id, 'stopped')
+        elif task_info['process'].exitcode not in (0, None):
+            update_task_status(task_id, 'error')
+
+    if task_id in _queue_hide_on_finish:
+        hide_task_from_queue(task_id)
+        _queue_hide_on_finish.discard(task_id)
+
+    _scheduler_cond.notify_all()
+
+
+def _reap_finished_processes_locked():
+    finished = []
+    for task_id, task_info in list(_active_tasks.items()):
+        process = task_info.get('process')
+        if process is None or process.is_alive():
+            continue
+        try:
+            process.join(timeout=0)
+        except Exception:
+            pass
+        finished.append(task_id)
+
+    for task_id in finished:
+        _finalize_active_task_locked(task_id)
+
+
+def _force_stop_process(task_id: int, task_info: dict):
+    stop_event = task_info.get('stop_event')
+    if stop_event is not None:
+        stop_event.set()
+
+    process = task_info.get('process')
+    if process is None:
+        return
+
+    if process.is_alive():
+        process.terminate()
+        process.join(timeout=2)
+    if process.is_alive():
+        process.kill()
+        process.join(timeout=1)
 
 
 def _scheduler_loop():
@@ -334,23 +401,37 @@ def _scheduler_loop():
     try:
         while True:
             with _scheduler_cond:
+                _reap_finished_processes_locked()
                 task = _pick_schedulable_task_locked()
                 if task is None:
                     _scheduler_cond.wait(timeout=1)
                     continue
 
-                stop_event = threading.Event()
+                _ensure_process_runtime_env()
+                stop_event = _MP_CTX.Event()
                 _stop_events[task['task_id']] = stop_event
                 _active_user_ids.add(task['user_id'])
-                thread = threading.Thread(target=_task_runner, args=(task, stop_event), daemon=True)
+                process = _MP_CTX.Process(
+                    target=_task_process_entry,
+                    args=(task, stop_event),
+                    daemon=True,
+                    name=f"study-task-{task['task_id']}",
+                )
                 _active_tasks[task['task_id']] = {
-                    'thread': thread,
+                    'process': process,
+                    'stop_event': stop_event,
                     'user_id': task['user_id'],
                     'course_title': task['course_title'],
+                    'stopping': False,
                 }
 
             _emit_live('system', f'开始执行: #{task["task_id"]} {task["course_title"]}')
-            thread.start()
+            try:
+                process.start()
+            except Exception as exc:
+                with _scheduler_cond:
+                    _finalize_active_task_locked(task['task_id'], forced_status='error')
+                _emit_live('error', f'任务 #{task["task_id"]} 启动失败: {exc}')
     finally:
         with _scheduler_cond:
             _scheduler_running = False
@@ -390,6 +471,7 @@ def start_task(user_id: int, course_id: str, course_title: str, chapter_ids: lis
 
 def stop_task(task_id: int):
     with _scheduler_cond:
+        _reap_finished_processes_locked()
         for index, task in enumerate(_pending_tasks):
             if task['task_id'] != task_id:
                 continue
@@ -399,9 +481,50 @@ def stop_task(task_id: int):
             _scheduler_cond.notify_all()
             return
 
-    ev = _stop_events.get(task_id)
-    if not ev:
+        active_info = _active_tasks.get(task_id)
+        if active_info:
+            active_info['stopping'] = True
+        else:
+            active_info = None
+
+    if not active_info:
         return
-    ev.set()
-    update_task_status(task_id, 'stopped')
-    _emit_live('system', f'任务 #{task_id} 已发出停止信号')
+
+    _force_stop_process(task_id, active_info)
+
+    with _scheduler_cond:
+        _finalize_active_task_locked(task_id, forced_status='stopped')
+
+    _emit_live('system', f'任务 #{task_id} 已强制结束')
+
+
+def delete_task(task_id: int):
+    with _scheduler_cond:
+        _reap_finished_processes_locked()
+        is_active = task_id in _active_tasks
+        if is_active:
+            _queue_hide_on_finish.add(task_id)
+    stop_task(task_id)
+    if not is_active:
+        hide_task_from_queue(task_id)
+        _emit_live('system', f'任务 #{task_id} 已从任务列表移除')
+    else:
+        hide_task_from_queue(task_id)
+        _emit_live('system', f'任务 #{task_id} 已强制结束并从任务列表移除')
+
+
+def clear_queue():
+    pending_ids = []
+    active_ids = []
+    with _scheduler_cond:
+        pending_ids = [task['task_id'] for task in _pending_tasks]
+        active_ids = list(_active_tasks.keys())
+        _queue_hide_on_finish.update(active_ids)
+
+    for task_id in pending_ids:
+        stop_task(task_id)
+        hide_task_from_queue(task_id)
+    for task_id in active_ids:
+        stop_task(task_id)
+        hide_task_from_queue(task_id)
+    _emit_live('system', '任务队列已清空，运行中的任务已被强制结束')
