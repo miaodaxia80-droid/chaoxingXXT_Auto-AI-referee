@@ -9,6 +9,7 @@ from unittest import mock
 from api.base import Account, Chaoxing, SessionManager, StudyResult
 import main
 from web import create_app, models
+from web.tiku_config import build_effective_tiku_config
 
 
 class RegressionTests(unittest.TestCase):
@@ -76,40 +77,86 @@ class RegressionTests(unittest.TestCase):
 
     def test_get_courses_progress_fetches_without_parallel_overlap(self):
         models.create_user({"username": "demo", "password": "pw"})
+        models.update_user(1, {"cookies_data": "uid=demo", "use_cookies": 1})
+        models.set_settings({"course_progress_workers": 2})
         overlap = {"active": 0, "max_active": 0}
         lock = threading.Lock()
 
-        class FakeCx:
-            def get_course_list(self):
-                return [
-                    {"courseId": "c1", "clazzId": "z1", "cpi": "p1", "title": "A"},
-                    {"courseId": "c2", "clazzId": "z2", "cpi": "p2", "title": "B"},
-                    {"courseId": "c3", "clazzId": "z3", "cpi": "p3", "title": "C"},
-                ]
+        def fake_worker(_user, _cookies_data, course):
+            with lock:
+                overlap["active"] += 1
+                overlap["max_active"] = max(overlap["max_active"], overlap["active"])
+            time.sleep(0.03)
+            with lock:
+                overlap["active"] -= 1
+            enriched = dict(course)
+            enriched.update({
+                "total_points": 2,
+                "done_points": 1,
+            })
+            return enriched
 
-            def get_course_point(self, *_args):
-                with lock:
-                    overlap["active"] += 1
-                    overlap["max_active"] = max(overlap["max_active"], overlap["active"])
-                time.sleep(0.03)
-                with lock:
-                    overlap["active"] -= 1
-                return {
-                    "points": [
-                        {"has_finished": True},
-                        {"has_finished": False},
-                    ]
-                }
+        courses = [
+            {"courseId": "c1", "clazzId": "z1", "cpi": "p1", "title": "A"},
+            {"courseId": "c2", "clazzId": "z2", "cpi": "p2", "title": "B"},
+            {"courseId": "c3", "clazzId": "z3", "cpi": "p3", "title": "C"},
+        ]
 
-        with mock.patch("web.routes.api._make_cx", return_value=FakeCx()):
-            response = self.client.get("/api/users/1/courses?progress=1")
+        with mock.patch("web.routes.api._course_progress_worker", side_effect=fake_worker):
+            response = self.client.post("/api/users/1/courses/progress", json={"courses": courses})
 
         self.assertEqual(response.status_code, 200)
         payload = response.get_json()
         self.assertEqual(len(payload), 3)
-        self.assertEqual(overlap["max_active"], 1)
+        self.assertEqual(overlap["max_active"], 2)
         self.assertEqual(payload[0]["total_points"], 2)
         self.assertEqual(payload[0]["done_points"], 1)
+
+    def test_timezone_setting_changes_generated_timestamp_offset(self):
+        models.set_settings({"timezone": "UTC"})
+        timestamp = models.now_iso()
+        self.assertTrue(timestamp.endswith("+00:00"))
+
+    def test_dashboard_can_disable_system_metrics_panel(self):
+        models.set_settings({"show_system_metrics": False})
+        payload = self.client.get("/api/dashboard").get_json()
+        self.assertFalse(payload["show_system_metrics"])
+        self.assertIsNone(payload["system_metrics"])
+
+    def test_user_ai_config_can_fall_back_to_global_defaults(self):
+        settings = {
+            "tiku_config": {
+                "provider": "AI",
+                "endpoint": "https://global.example/v1",
+                "key": "global-key",
+                "model": "gpt-global",
+            }
+        }
+        effective = build_effective_tiku_config(
+            {
+                "provider": "AI",
+                "models": '[{"provider":"AI","endpoint":"","key":"","model":""}]',
+            },
+            settings,
+        )
+        self.assertEqual(effective["endpoint"], "https://global.example/v1")
+        self.assertEqual(effective["key"], "global-key")
+        self.assertEqual(effective["model"], "gpt-global")
+        self.assertIn('"endpoint": "https://global.example/v1"', effective["models"])
+
+    def test_intervention_records_can_be_cleared(self):
+        models.create_user({"username": "demo", "password": "pw"})
+        task_id = models.create_task(1, "course-1", "Course 1")
+        models.add_chapter_log(task_id, "Chapter 1", "error", "Needs manual review")
+
+        pending = self.client.get("/api/intervention").get_json()
+        self.assertEqual(len(pending), 1)
+
+        response = self.client.delete(f"/api/intervention/{pending[0]['id']}")
+        self.assertEqual(response.status_code, 200)
+
+        cleared = self.client.get("/api/intervention").get_json()
+        self.assertEqual(cleared, [])
 
     def test_task_timestamps_follow_status_transitions(self):
         models.create_user({"username": "demo", "password": "pw"})

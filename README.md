@@ -1,7 +1,4 @@
-# 超星学习通 · 高级后台 v2.0
-
-> 本项目是 [Samueli924/chaoxing](https://github.com/Samueli924/chaoxing) (GPL-3.0) 的衍生作品，
-> 新增了 Web 管理后台、多账号管理、多模型 AI 协同答题、联网搜索等功能。
+# 超星学习通 · 高级后台 v1.5
 
 <p align="center">
     <a href="https://github.com/Samueli924/chaoxing" target="_blank">
@@ -29,20 +26,20 @@
 - 学习任务顺序队列执行（单线程 worker），stop 信号安全中断
 - 账号间 Session 隔离，互不影响
 
-### 3. 多模型 AI 协同答题（3 模型并行 + Referee 裁决）
+### 3. 多模型 AI 协同答题（v1.5）
 - 3 个 AI 模型并行作答同一道题，交叉验证
 - Referee 裁决机制：模型意见不一致时，由裁判模型综合判断
 - 课程名称作为上下文注入 prompt，提高专业领域准确率
-- 可选联网搜索增强（DuckDuckGo 免费免 Key / 自定义搜索 API）
+- 可选联网搜索增强（DuckDuckGo / 自定义搜索 API）
 
 ### 4. 实时监控与人工接管
 - 仪表盘：账号数、任务数、进度一目了然
 - 题库覆盖率不足、答题失败、章节跳过 → 自动标记「需人工接管」
-- 实时终端日志面板，与命令行输出完全同步
+- 实时终端日志面板，保持与命令行输出完全同步
 
 ### 5. Docker 一键部署
 - 支持 x86/arm64 NAS（飞牛、群晖等）Docker Compose 一键启动
-- 数据库和答题缓存持久化到宿主机 `./data/`，容器重建不丢数据
+- 数据库和答题缓存持久化到宿主机，容器重建不丢数据
 
 ---
 
@@ -82,7 +79,7 @@ http://localhost:5002
 ### CLI 命令行模式（兼容原有方式）
 
 ```bash
-# 直接运行（交互式）
+# 直接运行
 python main.py
 
 # 配置文件
@@ -97,14 +94,10 @@ python main.py -u 手机号 -p 密码 -l 课程ID1,课程ID2 -s 1.5 -j 4
 ```bash
 # 1. 将项目拷贝到 NAS
 
-# 2. 构建并启动（Web 模式）
+# 2. 构建并启动
 docker compose up -d --build
 
-# 3. CLI 模式
-docker build -t chaoxing .
-docker run -it -v /path/to/config.ini:/config/config.ini chaoxing
-
-# 4. 访问
+# 3. 访问
 http://NAS_IP:5002
 ```
 
@@ -118,73 +111,16 @@ http://NAS_IP:5002
 
 **[common]**
 - `username` / `password` — 登录凭据
-- `course_list` — 要学习的课程 ID 列表，逗号分隔
 - `speed` — 视频倍速（1 ~ 2）
 - `jobs` — 同时进行的章节数
 - `notopen_action` — 未开放章节处理：`retry`（重试）/ `continue`（跳过）
 - `user_agent` — 自定义 User-Agent（可选，留空使用默认）
 
 **[tiku]**
-- `provider` — 题库/模型：`TikuYanxi`、`TikuLike`、`TikuAdapter`、`AI`、`SiliconFlow`
+- `provider` — 题库/模型：`AI`、`SiliconFlow`、`TikuYanxi`、`TikuLike`、`TikuAdapter`
 - `multi_model` — 是否启用多模型协同（`true`/`false`）
-- `models` — 多模型配置 JSON 数组，每个元素含 `provider`/`endpoint`/`key`/`model`
-- `voting_strategy` — 裁决策略（`referee`）
-- `referee_model_index` — 裁判模型在 models 数组中的索引
-- `search_enabled` — 是否启用联网搜索（`true`/`false`）
-- `search_provider` — 搜索引擎（`duckduckgo` / `custom`）
 - `submit` — 提交模式：`true`（达到覆盖率自动提交）/ `false`（仅保存）
 - `cover_rate` — 最低覆盖率（0 ~ 1）
-- `delay` — 搜索间隔秒数
-- `tokens` — 言溪题库 / LIKE 知识库的 token，逗号分隔多个
-- `true_list` / `false_list` — 判断题选项映射
-- 各 AI 模型的专属配置：`endpoint`、`key`、`model`、`siliconflow_key`、`siliconflow_model` 等
-
-**[notification]**
-- `provider` — 推送服务：`ServerChan`、`Qmsg`、`Bark`、`Telegram`
-- `url` — 推送服务的 webhook URL
-- `tg_chat_id` — Telegram 推送时的 chat_id
-
-**Cookie 登录**：在 `[common]` 中设置 `use_cookies=true` 并在项目根目录放置 `cookies.txt`。
-
----
-
-## 测试
-
-```bash
-python -m pytest tests/ -v
-python -m unittest tests/test_regressions.py
-```
-
----
-
-## 项目结构
-
-```
-api/              核心功能模块
-├── base.py        超星 API 封装（登录、视频、文档、测验、阅读）
-├── answer.py      题库系统（Tiku 基类 + 各 provider + EnsembleTiku 多模型协同 + CacheDAO）
-├── decode.py      平台 JSON 解析
-├── font_decoder.py / cxsecret_font.py   字体混淆解码
-├── cipher.py      AES 登录加密
-├── captcha.py     图形验证码识别
-├── notification.py  外部推送通知（Server酱/Qmsg/Bark/Telegram）
-├── web_search.py  联网搜索（DuckDuckGo + 自定义 API）
-├── cookies.py     Cookie 解析/序列化
-├── config.py      全局常量
-├── exceptions.py  自定义异常
-├── logger.py      日志配置
-└── process.py     进度条工具
-web/              Web 后台
-├── __init__.py    Flask 工厂
-├── models.py      SQLite 数据层（用户/任务/章节记录/设置/操作日志）
-├── tasks.py       任务队列 + SSE 实时推送 + 全局日志广播
-├── routes/api.py  RESTful API
-├── routes/sse.py  Server-Sent Events 端点
-└── static/        前端 SPA（index.html / app.js / style.css）
-main.py            CLI 入口（ChapterResult 枚举 / JobProcessor 并发调度）
-server.py          Web 模式入口
-app.py             Celery 集成（预留）
-```
 
 ---
 

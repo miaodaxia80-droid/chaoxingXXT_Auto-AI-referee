@@ -1,10 +1,17 @@
+import json
 import os
 import sqlite3
-import json
-from datetime import datetime
 from contextlib import contextmanager
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 DB_PATH = os.environ.get("DB_PATH", "chaoxing_web.db")
+DEFAULT_SETTINGS = {
+    "timezone": os.environ.get("APP_TIMEZONE", "Asia/Shanghai"),
+    "max_concurrent_accounts": 2,
+    "course_progress_workers": 3,
+    "show_system_metrics": True,
+}
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
@@ -39,6 +46,7 @@ CREATE TABLE IF NOT EXISTS chapter_logs (
   chapter_title TEXT,
   result TEXT,
   message TEXT,
+  cleared INTEGER DEFAULT 0,
   ts TEXT,
   FOREIGN KEY(task_id) REFERENCES study_tasks(id)
 );
@@ -64,6 +72,80 @@ def init_db():
         conn.execute("PRAGMA journal_mode=WAL")
         conn.executescript(SCHEMA)
         _ensure_column(conn, "users", "user_agent", "TEXT DEFAULT ''")
+        _ensure_column(conn, "chapter_logs", "cleared", "INTEGER DEFAULT 0")
+
+
+def _normalize_setting_value(key, value):
+    if key in {"max_concurrent_accounts", "course_progress_workers"}:
+        try:
+            value = int(value)
+        except (TypeError, ValueError):
+            value = DEFAULT_SETTINGS[key]
+        return max(1, value)
+    if key == "show_system_metrics":
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "on"}
+        return bool(value)
+    if key == "timezone":
+        value = str(value or DEFAULT_SETTINGS["timezone"]).strip()
+        return value or DEFAULT_SETTINGS["timezone"]
+    return value
+
+
+def _safe_timezone_name(name):
+    try:
+        ZoneInfo(name)
+        return name
+    except ZoneInfoNotFoundError:
+        return DEFAULT_SETTINGS["timezone"]
+
+
+def _get_timezone(conn=None):
+    name = get_timezone_name(conn)
+    try:
+        return ZoneInfo(name)
+    except ZoneInfoNotFoundError:
+        try:
+            return datetime.now().astimezone().tzinfo or timezone.utc
+        except Exception:
+            return timezone.utc
+
+
+def get_timezone_name(conn=None):
+    if conn is not None:
+        raw = _get_setting_value(conn, "timezone", DEFAULT_SETTINGS["timezone"])
+        return _safe_timezone_name(_normalize_setting_value("timezone", raw))
+
+    with get_conn() as inner_conn:
+        return get_timezone_name(inner_conn)
+
+
+def now_iso(conn=None):
+    return datetime.now(_get_timezone(conn)).isoformat()
+
+
+def parse_timestamp(value, conn=None):
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    target_tz = _get_timezone(conn)
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=target_tz)
+    return parsed.astimezone(target_tz)
+
+
+def _get_setting_value(conn, key, default=None):
+    row = conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+    if row is None:
+        return default
+    value = row["value"]
+    try:
+        return json.loads(value)
+    except Exception:
+        return value
 
 @contextmanager
 def get_conn():
@@ -103,7 +185,7 @@ def create_user(data):
              data.get('speed',1.0), data.get('jobs',4), data.get('notopen_action','retry'),
              json.dumps(data.get('tiku_config',{})), json.dumps(data.get('notification_config',{})),
              data.get('remark',''), data.get('user_agent',''),
-             datetime.now().isoformat())
+             now_iso(conn))
         )
 
 def update_user(uid, data):
@@ -131,8 +213,8 @@ def create_task(user_id, course_id, course_title):
         return cur.lastrowid
 
 def update_task_status(task_id, status):
-    now = datetime.now().isoformat()
     with get_conn() as conn:
+        now = now_iso(conn)
         if status == 'running':
             conn.execute(
                 "UPDATE study_tasks SET status=?,started_at=COALESCE(started_at,?),finished_at=NULL WHERE id=?",
@@ -142,6 +224,16 @@ def update_task_status(task_id, status):
             conn.execute("UPDATE study_tasks SET status=?,finished_at=? WHERE id=?", (status, now, task_id))
         else:
             conn.execute("UPDATE study_tasks SET status=? WHERE id=?", (status, task_id))
+
+
+def reconcile_incomplete_tasks():
+    with get_conn() as conn:
+        now = now_iso(conn)
+        conn.execute(
+            "UPDATE study_tasks SET status='stopped', finished_at=COALESCE(finished_at, ?) "
+            "WHERE status IN ('pending', 'running')",
+            (now,),
+        )
 
 def get_tasks(limit=50):
     with get_conn() as conn:
@@ -158,8 +250,8 @@ def get_task(task_id):
 def add_chapter_log(task_id, chapter_title, result, message=''):
     with get_conn() as conn:
         conn.execute(
-            "INSERT INTO chapter_logs (task_id,chapter_title,result,message,ts) VALUES (?,?,?,?,?)",
-            (task_id, chapter_title, result, message, datetime.now().isoformat())
+            "INSERT INTO chapter_logs (task_id,chapter_title,result,message,cleared,ts) VALUES (?,?,?,?,?,?)",
+            (task_id, chapter_title, result, message, 0, now_iso(conn))
         )
 
 def get_chapter_logs(task_id, after_id=0):
@@ -197,13 +289,18 @@ def get_settings():
                 result[r['key']] = json.loads(r['value'])
             except Exception:
                 result[r['key']] = r['value']
+        for key, value in DEFAULT_SETTINGS.items():
+            result.setdefault(key, value)
+        for key in list(result):
+            result[key] = _normalize_setting_value(key, result[key])
+        result["timezone"] = _safe_timezone_name(result["timezone"])
         return result
 
 def add_operation_log(category, message):
     with get_conn() as conn:
         conn.execute(
             "INSERT INTO operation_logs (category,message,ts) VALUES (?,?,?)",
-            (category, message, datetime.now().isoformat())
+            (category, message, now_iso(conn))
         )
 
 def get_operation_logs(limit=200):
@@ -219,11 +316,41 @@ def get_intervention_needed():
             "JOIN study_tasks st ON cl.task_id=st.id "
             "JOIN users u ON st.user_id=u.id "
             "WHERE cl.result IN ('error','skipped','unsubmitted') AND cl.chapter_title != '' "
+            "AND COALESCE(cl.cleared, 0)=0 "
             "ORDER BY cl.id DESC LIMIT 100"
         ).fetchall()]
+
+
+def clear_intervention(log_id):
+    with get_conn() as conn:
+        conn.execute("UPDATE chapter_logs SET cleared=1 WHERE id=?", (log_id,))
+
+
+def clear_all_interventions():
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE chapter_logs SET cleared=1 "
+            "WHERE result IN ('error','skipped','unsubmitted') AND chapter_title != ''"
+        )
+
+
+def count_tasks_completed_today():
+    with get_conn() as conn:
+        today = datetime.now(_get_timezone(conn)).date()
+        rows = conn.execute(
+            "SELECT finished_at FROM study_tasks WHERE status='done' AND finished_at IS NOT NULL"
+        ).fetchall()
+        count = 0
+        for row in rows:
+            finished_at = parse_timestamp(row["finished_at"], conn)
+            if finished_at and finished_at.date() == today:
+                count += 1
+        return count
 
 def set_settings(data):
     with get_conn() as conn:
         for k, v in data.items():
+            if k in DEFAULT_SETTINGS:
+                v = _normalize_setting_value(k, v)
             conn.execute("INSERT OR REPLACE INTO settings (key,value) VALUES (?,?)",
                          (k, json.dumps(v) if not isinstance(v, str) else v))

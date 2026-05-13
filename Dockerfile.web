@@ -5,6 +5,7 @@ WORKDIR /app
 # ddddocr 依赖的运行时库
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libgomp1 \
+    tzdata \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .

@@ -19,12 +19,14 @@
   </nav>
   <div class="sidebar-footer">v1.6</div>
 </div>
+<div id="sidebar-overlay" onclick="closeSidebarForMobile()"></div>
 
 <!-- Main -->
 <div id="main">
   <div id="header">
     <h2 id="page-title">控制台</h2>
     <div class="header-actions">
+      <button class="menu-btn" onclick="toggleSidebar()" title="切换菜单">☰</button>
       <button class="theme-btn" onclick="toggleTheme()" title="切换主题"></button>
     </div>
   </div>
@@ -47,6 +49,30 @@
           <div class="stat-label">今日完成</div>
           <div class="stat-value c-green" id="s-done">0</div>
           <div class="stat-sub">今天完成的学习任务 →</div>
+        </div>
+      </div>
+
+      <div class="panel" id="system-status-panel">
+        <div class="panel-header fb"><span>系统状态</span><span class="text-sm text-muted" id="server-meta">检测中...</span></div>
+        <div class="panel-body">
+          <div class="metrics-grid">
+            <div class="metric-card">
+              <div class="metric-label">CPU 占用</div>
+              <div class="metric-value" id="m-cpu">--</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">温度</div>
+              <div class="metric-value" id="m-temp">--</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">内存占用</div>
+              <div class="metric-value" id="m-mem">--</div>
+            </div>
+            <div class="metric-card">
+              <div class="metric-label">队列状态</div>
+              <div class="metric-value" id="m-queue">--</div>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -73,8 +99,14 @@
 
       <div class="dash-panel" id="dash-intervention">
         <div class="panel">
-          <div class="panel-header fb"><span>需要人工接管</span><span class="text-sm text-muted">以下章节未能自动完成，需要手动处理</span></div>
-          <div class="panel-body"><div class="table-wrap"><table id="intervention-tbl"><thead><tr><th>用户</th><th>课程</th><th>章节</th><th>状态</th><th>原因</th><th>时间</th></tr></thead><tbody></tbody></table></div></div>
+          <div class="panel-header fb">
+            <span>需要人工接管</span>
+            <div class="btn-group">
+              <span class="text-sm text-muted">以下章节未能自动完成，需要手动处理</span>
+              <button class="btn sm ghost" onclick="clearAllInterventions()">一键清除</button>
+            </div>
+          </div>
+          <div class="panel-body"><div class="table-wrap"><table id="intervention-tbl"><thead><tr><th>用户</th><th>课程</th><th>章节</th><th>状态</th><th>原因</th><th>时间</th><th>操作</th></tr></thead><tbody></tbody></table></div></div>
         </div>
       </div>
     </div>
@@ -89,7 +121,7 @@
             <button class="btn sm primary" onclick="showAddUser()">➕ 添加用户</button>
           </div>
         </div>
-        <div class="panel-body"><div class="table-wrap"><table id="user-tbl"><thead><tr><th>ID</th><th>用户名</th><th>备注</th><th>速度</th><th>并发</th><th>题库</th><th>状态</th><th>操作</th></tr></thead><tbody></tbody></table></div></div>
+        <div class="panel-body"><div class="table-wrap"><table id="user-tbl"><thead><tr><th>ID</th><th>用户名</th><th>备注</th><th>速度</th><th>章节并发</th><th>题库</th><th>状态</th><th>操作</th></tr></thead><tbody></tbody></table></div></div>
       </div>
     </div>
 
@@ -103,6 +135,10 @@
           </div>
           <div class="form-group"><label class="form-label">选择课程</label>
             <input id="course-search" placeholder="搜索课程名称、教师、ID..." oninput="filterCourses()" style="margin-bottom:10px">
+            <div class="fb" style="margin-bottom:10px; gap:10px">
+              <span class="text-sm text-muted" id="course-progress-status">选择用户后先显示课程列表，再异步补课程进度</span>
+              <button class="btn sm ghost" onclick="refreshCourseProgress()">刷新进度</button>
+            </div>
             <div id="course-list" class="course-cards"><div class="empty"><div class="empty-icon"></div>请先选择用户</div></div>
           </div>
           <div class="form-group"><label class="form-label">选择章节 <span class="text-sm text-muted">（可选，不选则学习全部）</span></label>
@@ -127,6 +163,25 @@
       <div class="panel">
         <div class="panel-header">全局设置</div>
         <div class="panel-body">
+          <div class="section-title">系统设置</div>
+          <div class="form-group"><label class="form-label">时区</label>
+            <input id="g-timezone" placeholder="Asia/Shanghai">
+            <div class="form-hint">推荐填写 IANA 时区名，例如 `Asia/Shanghai`、`UTC`。</div>
+          </div>
+          <div class="form-group"><label class="form-label">最大并发账号数</label>
+            <input id="g-max-accounts" type="number" min="1" max="10" value="2">
+          </div>
+          <div class="form-group"><label class="form-label">课程进度抓取并发</label>
+            <input id="g-progress-workers" type="number" min="1" max="10" value="3">
+          </div>
+          <div class="form-group"><label class="form-label">显示系统状态板块</label>
+            <select id="g-show-system-metrics">
+              <option value="true">开启</option>
+              <option value="false">关闭</option>
+            </select>
+            <div class="form-hint">关闭后首页不再展示 CPU、温度、内存和队列概览。</div>
+          </div>
+
           <div class="section-title">题库配置</div>
           <div class="form-group"><label class="form-label">题库提供商</label>
             <select id="g-provider">
@@ -246,15 +301,18 @@
     <input id="d-user-agent" placeholder="留空则使用默认 UA">
   </div>
   <div class="form-group"><label class="form-label">视频速度（1 ~ 2）</label><input id="d-speed" type="number" step="0.1" min="1" max="2"></div>
-  <div class="form-group"><label class="form-label">同时进行章节数</label><input id="d-jobs" type="number" min="1"></div>
+  <div class="form-group"><label class="form-label">学习章节并发</label><input id="d-jobs" type="number" min="1"></div>
   <div class="form-group"><label class="form-label">未开放章节处理</label>
     <select id="d-notopen"><option value="retry">重试</option><option value="ask">询问</option><option value="continue">跳过</option></select>
   </div>
   <div class="section-title">题库配置</div>
   <div class="form-group"><label class="form-label">题库提供商</label>
-    <select id="d-provider"><option value="">不使用</option><option value="TikuYanxi">言溪题库</option><option value="TikuLike">LIKE 知识库</option><option value="TikuAdapter">TikuAdapter</option><option value="AI">AI 大模型</option><option value="SiliconFlow">硅基流动</option></select>
+    <select id="d-provider" onchange="toggleSingleProviderFields()"><option value="">不使用</option><option value="TikuYanxi">言溪题库</option><option value="TikuLike">LIKE 知识库</option><option value="TikuAdapter">TikuAdapter</option><option value="AI">AI 大模型</option><option value="SiliconFlow">硅基流动</option></select>
   </div>
-  <div class="form-group"><label class="form-label">Token</label><input id="d-tokens"></div>
+  <div class="form-group" id="d-provider-hint-group" style="display:none">
+    <div class="form-hint">当前账号会直接复用全局设置里的 AI Endpoint、API Key 和 Model，这里无需再填 token。</div>
+  </div>
+  <div class="form-group" id="d-tokens-group"><label class="form-label">Token</label><input id="d-tokens"></div>
   <div class="form-group"><label class="form-label">提交模式</label><select id="d-submit"><option value="false">仅保存</option><option value="true">自动提交</option></select></div>
   <div class="form-group"><label class="form-label">覆盖率</label><input id="d-cover" type="number" step="0.1" min="0" max="1" value="0.9"></div>
 
@@ -267,9 +325,9 @@
     <div class="form-group"><label class="form-label">Provider</label>
       <select class="mm-provider" data-idx="0" onchange="toggleModelFields(0)"><option value="AI">AI 大模型 (OpenAI)</option><option value="SiliconFlow">硅基流动</option></select>
     </div>
-    <div class="form-group mm-ai-fields" data-idx="0"><label class="form-label">Endpoint</label><input class="mm-endpoint" data-idx="0" placeholder="https://api.openai.com/v1"></div>
-    <div class="form-group mm-ai-fields" data-idx="0"><label class="form-label">API Key</label><input class="mm-key" data-idx="0" type="password" placeholder="sk-..."></div>
-    <div class="form-group mm-ai-fields" data-idx="0"><label class="form-label">Model</label><input class="mm-model" data-idx="0" placeholder="gpt-4o"></div>
+    <div class="form-group mm-ai-fields" data-idx="0"><label class="form-label">Endpoint</label><input class="mm-endpoint" data-idx="0" placeholder="留空则使用全局 AI Endpoint"></div>
+    <div class="form-group mm-ai-fields" data-idx="0"><label class="form-label">API Key</label><input class="mm-key" data-idx="0" type="password" placeholder="留空则使用全局 AI Key"></div>
+    <div class="form-group mm-ai-fields" data-idx="0"><label class="form-label">Model</label><input class="mm-model" data-idx="0" placeholder="留空则使用全局 AI Model"></div>
     <div class="form-group mm-sf-fields" data-idx="0" style="display:none"><label class="form-label">API Key</label><input class="mm-sf-key" data-idx="0" type="password" placeholder="sk-..."></div>
     <div class="form-group mm-sf-fields" data-idx="0" style="display:none"><label class="form-label">Model</label><input class="mm-sf-model" data-idx="0" placeholder="deepseek-ai/DeepSeek-V3"></div>
     <div class="form-group"><label class="referee-toggle"><input type="radio" name="mm-referee" value="0" checked><span class="referee-pill">⚖ 裁判</span></label></div>
@@ -278,9 +336,9 @@
     <div class="form-group"><label class="form-label">Provider</label>
       <select class="mm-provider" data-idx="1" onchange="toggleModelFields(1)"><option value="AI">AI 大模型 (OpenAI)</option><option value="SiliconFlow" selected>硅基流动</option></select>
     </div>
-    <div class="form-group mm-ai-fields" data-idx="1" style="display:none"><label class="form-label">Endpoint</label><input class="mm-endpoint" data-idx="1" placeholder="https://api.openai.com/v1"></div>
-    <div class="form-group mm-ai-fields" data-idx="1" style="display:none"><label class="form-label">API Key</label><input class="mm-key" data-idx="1" type="password" placeholder="sk-..."></div>
-    <div class="form-group mm-ai-fields" data-idx="1" style="display:none"><label class="form-label">Model</label><input class="mm-model" data-idx="1" placeholder="gpt-4o"></div>
+    <div class="form-group mm-ai-fields" data-idx="1" style="display:none"><label class="form-label">Endpoint</label><input class="mm-endpoint" data-idx="1" placeholder="留空则使用全局 AI Endpoint"></div>
+    <div class="form-group mm-ai-fields" data-idx="1" style="display:none"><label class="form-label">API Key</label><input class="mm-key" data-idx="1" type="password" placeholder="留空则使用全局 AI Key"></div>
+    <div class="form-group mm-ai-fields" data-idx="1" style="display:none"><label class="form-label">Model</label><input class="mm-model" data-idx="1" placeholder="留空则使用全局 AI Model"></div>
     <div class="form-group mm-sf-fields" data-idx="1"><label class="form-label">API Key</label><input class="mm-sf-key" data-idx="1" type="password" placeholder="sk-..."></div>
     <div class="form-group mm-sf-fields" data-idx="1"><label class="form-label">Model</label><input class="mm-sf-model" data-idx="1" placeholder="deepseek-ai/DeepSeek-V3"></div>
     <div class="form-group"><label class="referee-toggle"><input type="radio" name="mm-referee" value="1"><span class="referee-pill">⚖ 裁判</span></label></div>
@@ -289,9 +347,9 @@
     <div class="form-group"><label class="form-label">Provider</label>
       <select class="mm-provider" data-idx="2" onchange="toggleModelFields(2)"><option value="AI">AI 大模型 (OpenAI)</option><option value="SiliconFlow" selected>硅基流动</option></select>
     </div>
-    <div class="form-group mm-ai-fields" data-idx="2" style="display:none"><label class="form-label">Endpoint</label><input class="mm-endpoint" data-idx="2" placeholder="https://api.openai.com/v1"></div>
-    <div class="form-group mm-ai-fields" data-idx="2" style="display:none"><label class="form-label">API Key</label><input class="mm-key" data-idx="2" type="password" placeholder="sk-..."></div>
-    <div class="form-group mm-ai-fields" data-idx="2" style="display:none"><label class="form-label">Model</label><input class="mm-model" data-idx="2" placeholder="gpt-4o"></div>
+    <div class="form-group mm-ai-fields" data-idx="2" style="display:none"><label class="form-label">Endpoint</label><input class="mm-endpoint" data-idx="2" placeholder="留空则使用全局 AI Endpoint"></div>
+    <div class="form-group mm-ai-fields" data-idx="2" style="display:none"><label class="form-label">API Key</label><input class="mm-key" data-idx="2" type="password" placeholder="留空则使用全局 AI Key"></div>
+    <div class="form-group mm-ai-fields" data-idx="2" style="display:none"><label class="form-label">Model</label><input class="mm-model" data-idx="2" placeholder="留空则使用全局 AI Model"></div>
     <div class="form-group mm-sf-fields" data-idx="2"><label class="form-label">API Key</label><input class="mm-sf-key" data-idx="2" type="password" placeholder="sk-..."></div>
     <div class="form-group mm-sf-fields" data-idx="2"><label class="form-label">Model</label><input class="mm-sf-model" data-idx="2" placeholder="Qwen/Qwen3-235B-A22B"></div>
     <div class="form-group"><label class="referee-toggle"><input type="radio" name="mm-referee" value="2"><span class="referee-pill">⚖ 裁判</span></label></div>

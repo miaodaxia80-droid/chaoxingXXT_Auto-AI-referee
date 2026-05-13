@@ -1,16 +1,23 @@
-import queue
-import threading
-import sys
 import os
-from datetime import datetime
+import sys
+import threading
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from api.base import Chaoxing, Account
 from api.answer import Tiku
+from api.base import Account, Chaoxing
 from api.exceptions import LoginError
 from api.logger import logger
-from web.models import create_task, update_task_status, add_chapter_log, get_user, add_operation_log
+from web.models import (
+    add_chapter_log,
+    add_operation_log,
+    create_task,
+    get_settings,
+    get_user,
+    now_iso,
+    update_task_status,
+)
+from web.tiku_config import build_effective_tiku_config
 
 # task_id -> threading.Event (set to stop)
 _stop_events: dict[int, threading.Event] = {}
@@ -20,6 +27,18 @@ _sse_queues: dict[int, list] = {}
 _live_log_subscribers: list = []          # list of queue.Queue, one per SSE client
 _live_log_lock = threading.Lock()
 _live_log_history: list = []              # ring buffer of recent messages (max 200)
+
+# Multi-account scheduler state
+_pending_tasks: list[dict] = []
+_active_tasks: dict[int, dict] = {}
+_active_user_ids: set[int] = set()
+_scheduler_running = False
+_scheduler_cond = threading.Condition()
+
+
+def _ts():
+    return now_iso()
+
 
 def _broadcast_log(payload):
     """Push a log message to all active subscribers and ring buffer."""
@@ -36,11 +55,13 @@ def _broadcast_log(payload):
         for q in dead:
             _live_log_subscribers.remove(q)
 
+
 def subscribe_live_log(q):
     """Register a subscriber queue. Returns a copy of recent history."""
     with _live_log_lock:
         _live_log_subscribers.append(q)
         return list(_live_log_history)
+
 
 def unsubscribe_live_log(q):
     """Remove a subscriber queue."""
@@ -50,28 +71,26 @@ def unsubscribe_live_log(q):
         except ValueError:
             pass
 
-# Capture all loguru output to live log broadcast
+
 def _loguru_sink(msg):
     """Push formatted loguru message to the live log broadcast."""
     payload = {
         'category': 'log',
         'message': str(msg).rstrip(),
-        'ts': datetime.now().isoformat()
+        'ts': _ts(),
     }
     _broadcast_log(payload)
+
 
 _loguru_sink_id = getattr(logger, '_web_sink_id', None)
 if _loguru_sink_id is None:
     _loguru_sink_id = logger.add(_loguru_sink, level="DEBUG", format="{time:HH:mm:ss.SSS} | {message}")
     logger._web_sink_id = _loguru_sink_id
 
-# Task queue for sequential processing
-_task_queue: queue.Queue = queue.Queue()
-_worker_running = False
-_worker_lock = threading.Lock()
 
 def subscribe_sse(task_id, q):
     _sse_queues.setdefault(task_id, []).append(q)
+
 
 def unsubscribe_sse(task_id, q):
     try:
@@ -79,49 +98,60 @@ def unsubscribe_sse(task_id, q):
     except ValueError:
         pass
 
+
 def _emit(task_id, chapter_title, result, message=''):
     add_chapter_log(task_id, chapter_title, result, message)
-    payload = {'chapter_title': chapter_title, 'result': result, 'message': message, 'ts': datetime.now().isoformat()}
+    payload = {'chapter_title': chapter_title, 'result': result, 'message': message, 'ts': _ts()}
     for q in list(_sse_queues.get(task_id, [])):
         try:
             q.put_nowait(payload)
         except Exception:
             pass
 
+
 def _emit_live(category, message):
     """推送实时日志到 web UI"""
-    payload = {'category': category, 'message': message, 'ts': datetime.now().isoformat()}
+    payload = {'category': category, 'message': message, 'ts': _ts()}
     add_operation_log(category, message)
     _broadcast_log(payload)
 
-def _build_chaoxing(user: dict) -> Chaoxing:
-    tiku_conf = user.get('tiku_config') or {}
-    tiku_conf.setdefault('true_list', '正确,对,√,是')
-    tiku_conf.setdefault('false_list', '错误,错,×,否,不对,不正确')
-    tiku_conf.setdefault('submit', 'false')
-    tiku_conf.setdefault('cover_rate', '0.9')
-    tiku_conf.setdefault('delay', '1.0')
-    tiku_conf.setdefault('likeapi_search', 'false')
-    tiku_conf.setdefault('likeapi_model', 'deepseek-v3')
-    tiku_conf.setdefault('url', '')
-    tiku_conf.setdefault('endpoint', '')
-    tiku_conf.setdefault('key', '')
-    tiku_conf.setdefault('model', '')
-    tiku_conf.setdefault('http_proxy', '')
-    tiku_conf.setdefault('min_interval_seconds', '3')
-    tiku_conf.setdefault('siliconflow_key', '')
-    tiku_conf.setdefault('siliconflow_model', 'deepseek-ai/DeepSeek-V3')
-    tiku_conf.setdefault('siliconflow_endpoint', 'https://api.siliconflow.cn/v1/chat/completions')
-    tiku_conf.setdefault('multi_model', 'false')
-    tiku_conf.setdefault('models', '[]')
-    tiku_conf.setdefault('search_enabled', 'false')
-    tiku_conf.setdefault('search_max_results', '3')
-    tiku_conf.setdefault('voting_strategy', 'referee')
-    tiku_conf.setdefault('referee_model_index', '0')
 
+def _get_max_concurrent_accounts():
+    settings = get_settings()
+    try:
+        return max(1, int(settings.get('max_concurrent_accounts', 2)))
+    except (TypeError, ValueError):
+        return 2
+
+
+def get_scheduler_stats():
+    with _scheduler_cond:
+        return {
+            'pending': len(_pending_tasks),
+            'active': len(_active_tasks),
+            'active_users': len(_active_user_ids),
+            'max_concurrent_accounts': _get_max_concurrent_accounts(),
+        }
+
+
+def _pick_schedulable_task_locked():
+    if len(_active_tasks) >= _get_max_concurrent_accounts():
+        return None
+
+    for index, task in enumerate(_pending_tasks):
+        if task['user_id'] in _active_user_ids:
+            continue
+        return _pending_tasks.pop(index)
+
+    return None
+
+
+def _build_chaoxing(user: dict) -> Chaoxing:
+    tiku_conf = build_effective_tiku_config(user.get('tiku_config') or {}, get_settings())
     multi_model = tiku_conf.get('multi_model', 'false') in ('true', 'True', '1', 'yes')
     if multi_model:
         from api.answer import EnsembleTiku
+
         tiku = EnsembleTiku()
         tiku.config_set(tiku_conf)
         tiku.init_tiku()
@@ -170,18 +200,18 @@ def _run_task(task_id: int, user_id: int, course_id: str, course_title: str, sto
             'should_stop': stop_event.is_set,
         }
 
-        # 如果指定了章节，过滤 course points
         if chapter_ids:
             point_list = cx.get_course_point(course['courseId'], course['clazzId'], course['cpi'])
             all_points = point_list.get('points', [])
             selected = [p for p in all_points if p['id'] in chapter_ids]
             _emit_live('study', f'选择了 {len(selected)}/{len(all_points)} 个章节')
-            # Monkey-patch get_course_point to return only selected chapters
             original_gcp = cx.get_course_point
+
             def filtered_gcp(*args, **kwargs):
                 result = original_gcp(*args, **kwargs)
                 result['points'] = [p for p in result.get('points', []) if p['id'] in chapter_ids]
                 return result
+
             cx.get_course_point = filtered_gcp
 
         import main as main_mod
@@ -228,48 +258,91 @@ def _run_task(task_id: int, user_id: int, course_id: str, course_title: str, sto
                 pass
 
 
-def _task_worker():
-    """单线程任务队列 worker，顺序处理学习任务"""
-    global _worker_running
-    _emit_live('system', '任务队列 worker 已启动')
-    while True:
-        try:
-            task = _task_queue.get(timeout=5)
-        except queue.Empty:
-            # 检查是否还有待处理任务
-            continue
-        if task is None:  # shutdown signal
-            _emit_live('system', '任务队列 worker 已停止')
-            break
-        task_id, user_id, course_id, course_title, chapter_ids = task
-        _emit_live('system', f'队列处理: #{task_id} {course_title}')
-        stop_event = threading.Event()
-        _stop_events[task_id] = stop_event
-        _run_task(task_id, user_id, course_id, course_title, stop_event, chapter_ids)
-        _task_queue.task_done()
-    _worker_running = False
+def _task_runner(task: dict, stop_event: threading.Event):
+    try:
+        _run_task(
+            task['task_id'],
+            task['user_id'],
+            task['course_id'],
+            task['course_title'],
+            stop_event,
+            task.get('chapter_ids'),
+        )
+    finally:
+        with _scheduler_cond:
+            _active_tasks.pop(task['task_id'], None)
+            _active_user_ids.discard(task['user_id'])
+            _scheduler_cond.notify_all()
 
 
-def _ensure_worker():
-    global _worker_running
-    with _worker_lock:
-        if not _worker_running:
-            _worker_running = True  # set BEFORE starting thread to prevent race
-            t = threading.Thread(target=_task_worker, daemon=True)
-            t.start()
+def _scheduler_loop():
+    global _scheduler_running
+    _emit_live('system', '任务调度器已启动')
+    try:
+        while True:
+            with _scheduler_cond:
+                task = _pick_schedulable_task_locked()
+                if task is None:
+                    _scheduler_cond.wait(timeout=1)
+                    continue
+
+                stop_event = threading.Event()
+                _stop_events[task['task_id']] = stop_event
+                _active_user_ids.add(task['user_id'])
+                thread = threading.Thread(target=_task_runner, args=(task, stop_event), daemon=True)
+                _active_tasks[task['task_id']] = {
+                    'thread': thread,
+                    'user_id': task['user_id'],
+                    'course_title': task['course_title'],
+                }
+
+            _emit_live('system', f'开始执行: #{task["task_id"]} {task["course_title"]}')
+            thread.start()
+    finally:
+        with _scheduler_cond:
+            _scheduler_running = False
+
+
+def _ensure_scheduler():
+    global _scheduler_running
+    with _scheduler_cond:
+        if _scheduler_running:
+            return
+        _scheduler_running = True
+        thread = threading.Thread(target=_scheduler_loop, daemon=True)
+        thread.start()
 
 
 def start_task(user_id: int, course_id: str, course_title: str, chapter_ids: list = None) -> int:
     task_id = create_task(user_id, course_id, course_title)
-    _ensure_worker()
-    _task_queue.put((task_id, user_id, course_id, course_title, chapter_ids))
+    _ensure_scheduler()
+    with _scheduler_cond:
+        _pending_tasks.append({
+            'task_id': task_id,
+            'user_id': user_id,
+            'course_id': course_id,
+            'course_title': course_title,
+            'chapter_ids': chapter_ids,
+        })
+        _scheduler_cond.notify_all()
     _emit_live('system', f'任务已加入队列: #{task_id} {course_title}')
     return task_id
 
 
 def stop_task(task_id: int):
+    with _scheduler_cond:
+        for index, task in enumerate(_pending_tasks):
+            if task['task_id'] != task_id:
+                continue
+            _pending_tasks.pop(index)
+            update_task_status(task_id, 'stopped')
+            _emit_live('system', f'任务 #{task_id} 已从队列移除')
+            _scheduler_cond.notify_all()
+            return
+
     ev = _stop_events.get(task_id)
-    if ev:
-        ev.set()
-        update_task_status(task_id, 'stopped')
-        _emit_live('system', f'任务 #{task_id} 已发出停止信号')
+    if not ev:
+        return
+    ev.set()
+    update_task_status(task_id, 'stopped')
+    _emit_live('system', f'任务 #{task_id} 已发出停止信号')

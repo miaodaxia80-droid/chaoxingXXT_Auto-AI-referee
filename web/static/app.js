@@ -1,5 +1,9 @@
 let editUid = null, sseSource = null, userCache = [], allCourses = [], liveLogSource = null;
 let chapterCache = [];  // [{id, title, has_finished, ...}]
+let appSettings = { timezone: 'Asia/Shanghai', max_concurrent_accounts: 2, course_progress_workers: 3, show_system_metrics: true };
+let courseLoadToken = 0;
+let dashboardRefreshTimer = null;
+let dashboardRefreshInFlight = false;
 const USER_AGENT_GENERATORS = [
   function() {
     var major = 134 + Math.floor(Math.random() * 4);
@@ -56,6 +60,7 @@ if (localStorage.getItem('theme') === 'dark') {
 const TITLES = { dashboard:'控制台', users:'用户管理', study:'学习中心', settings:'全局设置', logs:'系统日志' };
 document.querySelectorAll('#sidebar nav a').forEach(a => a.addEventListener('click', e => {
   e.preventDefault();
+  closeSidebarForMobile();
   const p = a.dataset.page;
   document.querySelectorAll('.page').forEach(x => x.classList.remove('active'));
   document.querySelectorAll('#sidebar nav a').forEach(x => x.classList.remove('active'));
@@ -69,6 +74,16 @@ document.querySelectorAll('#sidebar nav a').forEach(a => a.addEventListener('cli
   if (p === 'logs') loadLogs();
 }));
 
+function toggleSidebar() {
+  document.getElementById('sidebar').classList.toggle('open');
+  document.getElementById('sidebar-overlay').classList.toggle('open');
+}
+
+function closeSidebarForMobile() {
+  document.getElementById('sidebar').classList.remove('open');
+  document.getElementById('sidebar-overlay').classList.remove('open');
+}
+
 // --- API ---
 const api = (url, opts={}) => fetch(url, {headers:{'Content-Type':'application/json'}, ...opts}).then(r => r.json());
 const GET = url => api(url);
@@ -77,23 +92,80 @@ const PUT = (url, body) => api(url, {method:'PUT', body:JSON.stringify(body)});
 const DEL = url => api(url, {method:'DELETE'});
 const esc = s => String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 
+function formatTs(ts, withSeconds=true) {
+  if (!ts) return '';
+  try {
+    var d = new Date(ts);
+    if (isNaN(d.getTime())) return String(ts).slice(0, withSeconds ? 19 : 16);
+    return d.toLocaleString('zh-CN', {
+      hour12: false,
+      timeZone: appSettings.timezone || 'Asia/Shanghai',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: withSeconds ? '2-digit' : undefined
+    }).replace(/\//g, '-');
+  } catch (e) {
+    return String(ts).slice(0, withSeconds ? 19 : 16);
+  }
+}
+
+function formatShortTs(ts) {
+  var formatted = formatTs(ts, true);
+  return formatted ? formatted.slice(-8) : '';
+}
+
 // --- Dashboard ---
 async function loadDashboard() {
-  const d = await GET('/api/dashboard');
-  document.getElementById('s-users').textContent = d.total_users;
-  document.getElementById('s-running').textContent = d.running_tasks;
-  const today = new Date().toISOString().slice(0,10);
-  document.getElementById('s-done').textContent = (d.progress||[]).filter(p => p.status==='done' && (p.finished_at||'').startsWith(today)).length;
+  if (dashboardRefreshInFlight) return;
+  dashboardRefreshInFlight = true;
+  try {
+    const d = await GET('/api/dashboard');
+    appSettings.timezone = d.timezone || appSettings.timezone;
+    appSettings.show_system_metrics = d.show_system_metrics !== false;
+    document.getElementById('s-users').textContent = d.total_users;
+    document.getElementById('s-running').textContent = d.running_tasks;
+    document.getElementById('s-done').textContent = d.today_done || 0;
 
-  document.querySelector('#log-tbl tbody').innerHTML = (d.recent_logs||[]).map(l => {
-    const label = l.result==='success'?'成功':l.result==='error'?'失败':l.result==='skipped'?'跳过':l.result;
-    return '<tr><td>'+esc(l.username)+'</td><td>'+esc(l.course_title)+'</td><td>'+esc(l.chapter_title)+'</td><td><span class="badge '+l.result+'">'+label+'</span></td><td>'+(l.ts||'').slice(0,19)+'</td></tr>';
-  }).join('') || '<tr><td colspan="5" class="empty">暂无数据</td></tr>';
+    document.querySelector('#log-tbl tbody').innerHTML = (d.recent_logs||[]).map(l => {
+      const label = l.result==='success'?'成功':l.result==='error'?'失败':l.result==='skipped'?'跳过':l.result;
+      return '<tr><td>'+esc(l.username)+'</td><td>'+esc(l.course_title)+'</td><td>'+esc(l.chapter_title)+'</td><td><span class="badge '+l.result+'">'+label+'</span></td><td>'+formatTs(l.ts)+'</td></tr>';
+    }).join('') || '<tr><td colspan="5" class="empty">暂无数据</td></tr>';
 
-  document.getElementById('progress-list').innerHTML = (d.progress||[]).map(p => {
-    const pct = p.total_chapters > 0 ? Math.round(p.done_chapters / p.total_chapters * 100) : 0;
-    return '<div style="margin-bottom:12px"><div class="fb" style="margin-bottom:4px"><span style="font-size:13px">'+esc(p.username)+' · '+esc(p.course_title)+'</span><span style="font-size:12px;color:var(--text2)">'+(p.done_chapters||0)+'/'+(p.total_chapters||0)+' <span class="badge '+p.status+'">'+p.status+'</span></span></div><div class="pb-bar"><div class="pb-fill" style="width:'+pct+'%"></div></div></div>';
-  }).join('') || '<div class="empty">暂无进度数据</div>';
+    document.getElementById('progress-list').innerHTML = (d.progress||[]).map(p => {
+      const pct = p.total_chapters > 0 ? Math.round(p.done_chapters / p.total_chapters * 100) : 0;
+      return '<div style="margin-bottom:12px"><div class="fb" style="margin-bottom:4px"><span style="font-size:13px">'+esc(p.username)+' · '+esc(p.course_title)+'</span><span style="font-size:12px;color:var(--text2)">'+(p.done_chapters||0)+'/'+(p.total_chapters||0)+' <span class="badge '+p.status+'">'+p.status+'</span></span></div><div class="pb-bar"><div class="pb-fill" style="width:'+pct+'%"></div></div></div>';
+    }).join('') || '<div class="empty">暂无进度数据</div>';
+
+    var panel = document.getElementById('system-status-panel');
+    var metrics = d.system_metrics || {};
+    var scheduler = d.scheduler || {};
+    panel.style.display = appSettings.show_system_metrics ? '' : 'none';
+    if (appSettings.show_system_metrics) {
+      document.getElementById('m-cpu').textContent = metrics.cpu_percent != null ? metrics.cpu_percent + '%' : '--';
+      document.getElementById('m-temp').textContent = metrics.temperature_c != null ? metrics.temperature_c + '°C' : '--';
+      document.getElementById('m-mem').textContent = metrics.memory_percent != null ? metrics.memory_percent + '% (' + Math.round(metrics.memory_used_mb || 0) + '/' + Math.round(metrics.memory_total_mb || 0) + 'MB)' : '--';
+      document.getElementById('m-queue').textContent = (scheduler.active || 0) + ' 运行 / ' + (scheduler.pending || 0) + ' 等待';
+      document.getElementById('server-meta').textContent = (metrics.hostname || '本机') + ' · ' + (appSettings.timezone || 'Asia/Shanghai') + ' · 最大并发账号 ' + (scheduler.max_concurrent_accounts || appSettings.max_concurrent_accounts || 2);
+    }
+  } finally {
+    dashboardRefreshInFlight = false;
+  }
+}
+
+function startDashboardAutoRefresh() {
+  if (dashboardRefreshTimer) return;
+  dashboardRefreshTimer = setInterval(function() {
+    if (document.hidden) return;
+    var dashboardPage = document.getElementById('dashboard-page');
+    if (!dashboardPage || !dashboardPage.classList.contains('active')) return;
+    loadDashboard();
+    if (document.getElementById('dash-intervention').classList.contains('active')) {
+      loadIntervention();
+    }
+  }, 5000);
 }
 
 // --- Intervention ---
@@ -108,13 +180,24 @@ async function loadIntervention() {
   }
   var tbody = document.querySelector('#intervention-tbl tbody');
   if (!items.length) {
-    tbody.innerHTML = '<tr><td colspan="6" class="empty" style="color:#52c41a">✅ 所有章节均已自动完成，无需人工接管</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="7" class="empty" style="color:#52c41a">✅ 所有章节均已自动完成，无需人工接管</td></tr>';
     return;
   }
   tbody.innerHTML = items.map(i => {
     var label = i.result==='error'?'失败':i.result==='unsubmitted'?'未提交':'跳过';
-    return '<tr><td>'+esc(i.username)+'</td><td>'+esc(i.course_title)+'</td><td>'+esc(i.chapter_title)+'</td><td><span class="badge '+i.result+'">'+label+'</span></td><td style="font-size:12px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(i.message||'')+'</td><td style="white-space:nowrap">'+(i.ts||'').slice(0,16)+'</td></tr>';
+    return '<tr><td>'+esc(i.username)+'</td><td>'+esc(i.course_title)+'</td><td>'+esc(i.chapter_title)+'</td><td><span class="badge '+i.result+'">'+label+'</span></td><td style="font-size:12px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(i.message||'')+'</td><td style="white-space:nowrap">'+formatTs(i.ts, false)+'</td><td><button class="btn sm ghost" onclick="clearIntervention('+i.id+')">清除</button></td></tr>';
   }).join('');
+}
+
+async function clearIntervention(id) {
+  await DEL('/api/intervention/' + id);
+  loadIntervention();
+}
+
+async function clearAllInterventions() {
+  if (!confirm('确认清空当前人工接管列表？')) return;
+  await POST('/api/intervention/clear');
+  loadIntervention();
 }
 
 // --- Users ---
@@ -214,6 +297,7 @@ function openDrawer(id) {
     toggleModelFields(i);
   }
   toggleMultiModel();
+  toggleSingleProviderFields();
   toggleSearchConfig();
   toggleSearchFields();
   updateRefereeBadges();
@@ -244,7 +328,7 @@ async function saveDrawer() {
   if (refRadio) refereeIdx = parseInt(refRadio.value);
   var tiku_config = {
     provider: document.getElementById('d-provider').value,
-    tokens: document.getElementById('d-tokens').value,
+    tokens: document.getElementById('d-provider').value === 'AI' ? '' : document.getElementById('d-tokens').value,
     submit: document.getElementById('d-submit').value,
     cover_rate: parseFloat(document.getElementById('d-cover').value),
     multi_model: document.getElementById('d-multi-model').value,
@@ -308,16 +392,57 @@ async function loadStudyUsers() {
 }
 
 async function loadCourses() {
+  courseLoadToken += 1;
+  var currentToken = courseLoadToken;
   var uid = document.getElementById('study-uid').value;
   var cl = document.getElementById('course-list');
   document.getElementById('course-search').value = '';
-  if (!uid) { cl.innerHTML = '<div class="empty">请先选择用户</div>'; allCourses = []; return; }
+  if (!uid) {
+    cl.innerHTML = '<div class="empty">请先选择用户</div>';
+    document.getElementById('course-progress-status').textContent = '选择用户后先显示课程列表，再异步补课程进度';
+    allCourses = [];
+    return;
+  }
   cl.innerHTML = '<div class="empty">加载中...</div>';
-  var courses = await GET('/api/users/'+uid+'/courses?progress=1');
-  if (courses.error) { cl.innerHTML = '<div class="empty" style="color:#ff4d4f">'+esc(courses.error)+'</div>'; allCourses = []; return; }
-  if (!Array.isArray(courses) || !courses.length) { cl.innerHTML = '<div class="empty">暂无课程</div>'; allCourses = []; return; }
-  allCourses = courses;
-  renderCourses(courses);
+  document.getElementById('course-progress-status').textContent = '正在拉取课程列表...';
+  var courses = await GET('/api/users/'+uid+'/courses');
+  if (currentToken !== courseLoadToken) return;
+  if (courses.error) { cl.innerHTML = '<div class="empty" style="color:#ff4d4f">'+esc(courses.error)+'</div>'; document.getElementById('course-progress-status').textContent = '课程列表加载失败'; allCourses = []; return; }
+  if (!Array.isArray(courses) || !courses.length) { cl.innerHTML = '<div class="empty">暂无课程</div>'; document.getElementById('course-progress-status').textContent = '当前账号没有可学习课程'; allCourses = []; return; }
+  allCourses = courses.map(function(course) {
+    course.progress_loaded = false;
+    return course;
+  });
+  document.getElementById('course-progress-status').textContent = '课程列表已加载，正在补课程进度...';
+  renderCourses(allCourses);
+  loadCourseProgress(uid, currentToken);
+}
+
+async function loadCourseProgress(uid, token) {
+  var result = await POST('/api/users/' + uid + '/courses/progress', { courses: allCourses });
+  if (token !== courseLoadToken || document.getElementById('study-uid').value !== uid) return;
+  if (result.error) {
+    document.getElementById('course-progress-status').textContent = '课程进度加载失败：' + result.error;
+    return;
+  }
+  var byId = {};
+  result.forEach(function(course) {
+    course.progress_loaded = true;
+    byId[course.courseId] = course;
+  });
+  allCourses = allCourses.map(function(course) {
+    return byId[course.courseId] || course;
+  });
+  document.getElementById('course-progress-status').textContent = '课程进度已更新（抓取并发 ' + (appSettings.course_progress_workers || 3) + '）';
+  filterCourses();
+}
+
+function refreshCourseProgress() {
+  var uid = document.getElementById('study-uid').value;
+  if (!uid || !allCourses.length) return;
+  courseLoadToken += 1;
+  document.getElementById('course-progress-status').textContent = '正在刷新课程进度...';
+  loadCourseProgress(uid, courseLoadToken);
 }
 
 function renderCourses(courses) {
@@ -331,8 +456,10 @@ function renderCourses(courses) {
     html += '<div class="cc-body">';
     html += '<div class="cc-title">'+esc(c.title)+'</div>';
     html += '<div class="cc-meta"><span>👨‍🏫 '+esc(c.teacher||'未知')+'</span><span>📋 '+esc(c.clazzId||'')+'</span></div>';
-    if (total > 0) {
+    if (total > 0 || done > 0) {
       html += '<div style="margin-top:6px"><div class="fb" style="font-size:11px;margin-bottom:3px"><span>进度</span><span>'+done+'/'+total+'</span></div><div class="pb-bar"><div class="pb-fill" style="width:'+pct+'%"></div></div></div>';
+    } else if (c.progress_loaded === false) {
+      html += '<div style="font-size:11px;color:var(--text2);margin-top:4px">正在获取章节进度...</div>';
     } else {
       html += '<div style="font-size:11px;color:var(--text2);margin-top:4px">点击刷新查看进度</div>';
     }
@@ -405,7 +532,7 @@ async function loadTasks() {
   document.querySelector('#task-tbl tbody').innerHTML = tasks.map(t => {
     var statusLabel = t.status==='stopped'?'已停止':t.status==='running'?'运行中':t.status==='done'?'完成':t.status==='error'?'错误':t.status;
     var stopBtn = t.status==='running' ? '<button class="btn sm danger" onclick="stopTask('+t.id+')">停止</button>' : '';
-    return '<tr><td>'+t.id+'</td><td>'+esc(t.username||'')+'</td><td>'+esc(t.course_title)+'</td><td><span class="badge '+t.status+'">'+statusLabel+'</span></td><td>'+(t.started_at||'').slice(0,19)+'</td><td class="flex"><button class="btn sm" onclick="viewLog('+t.id+')">日志</button>'+stopBtn+'</td></tr>';
+    return '<tr><td>'+t.id+'</td><td>'+esc(t.username||'')+'</td><td>'+esc(t.course_title)+'</td><td><span class="badge '+t.status+'">'+statusLabel+'</span></td><td>'+formatTs(t.started_at)+'</td><td class="flex"><button class="btn sm" onclick="viewLog('+t.id+')">日志</button>'+stopBtn+'</td></tr>';
   }).join('') || '<tr><td colspan="6" class="empty">暂无任务</td></tr>';
 }
 
@@ -425,7 +552,7 @@ function viewLog(taskId) {
     var log = JSON.parse(e.data);
     var div = document.createElement('div');
     div.style.padding = '2px 0'; div.style.borderBottom = '1px solid rgba(255,255,255,.05)'; if (log.result==='success') div.style.color='#3fb950'; if (log.result==='error') div.style.color='#f85149'; if (log.result==='skipped') div.style.color='#d29922';
-    div.textContent = '['+(log.ts||'').slice(11,19)+'] '+(log.chapter_title||'')+' '+(log.result?'['+log.result+']':'')+' '+(log.message||'');
+    div.textContent = '['+formatShortTs(log.ts)+'] '+(log.chapter_title||'')+' '+(log.result?'['+log.result+']':'')+' '+(log.message||'');
     var panel = document.getElementById('log-panel');
     panel.appendChild(div);
     panel.scrollTop = panel.scrollHeight;
@@ -435,7 +562,12 @@ function viewLog(taskId) {
 // --- Settings ---
 async function loadSettings() {
   var s = await GET('/api/settings');
+  appSettings = Object.assign(appSettings, s);
   var tc = s.tiku_config || {};
+  document.getElementById('g-timezone').value = s.timezone || 'Asia/Shanghai';
+  document.getElementById('g-max-accounts').value = s.max_concurrent_accounts || 2;
+  document.getElementById('g-progress-workers').value = s.course_progress_workers || 3;
+  document.getElementById('g-show-system-metrics').value = s.show_system_metrics === false ? 'false' : 'true';
   document.getElementById('g-provider').value = tc.provider || '';
   document.getElementById('g-tokens').value = tc.tokens || '';
   document.getElementById('g-submit').value = String(tc.submit || 'false');
@@ -447,17 +579,24 @@ async function loadSettings() {
 }
 
 async function saveSettings() {
-  await PUT('/api/settings', { tiku_config: {
-    provider: document.getElementById('g-provider').value,
-    tokens: document.getElementById('g-tokens').value,
-    submit: document.getElementById('g-submit').value,
-    cover_rate: parseFloat(document.getElementById('g-cover').value),
-    delay: parseFloat(document.getElementById('g-delay').value),
-    endpoint: document.getElementById('g-endpoint').value,
-    key: document.getElementById('g-key').value,
-    model: document.getElementById('g-model').value,
-  }});
+  await PUT('/api/settings', {
+    timezone: document.getElementById('g-timezone').value.trim() || 'Asia/Shanghai',
+    max_concurrent_accounts: parseInt(document.getElementById('g-max-accounts').value, 10) || 2,
+    course_progress_workers: parseInt(document.getElementById('g-progress-workers').value, 10) || 3,
+    show_system_metrics: document.getElementById('g-show-system-metrics').value === 'true',
+    tiku_config: {
+      provider: document.getElementById('g-provider').value,
+      tokens: document.getElementById('g-tokens').value,
+      submit: document.getElementById('g-submit').value,
+      cover_rate: parseFloat(document.getElementById('g-cover').value),
+      delay: parseFloat(document.getElementById('g-delay').value),
+      endpoint: document.getElementById('g-endpoint').value,
+      key: document.getElementById('g-key').value,
+      model: document.getElementById('g-model').value,
+    }
+  });
   alert('保存成功');
+  loadDashboard();
 }
 
 function openSyncModal() { loadStudyUsers(); openModal('sync-modal'); }
@@ -496,7 +635,7 @@ function toggleLiveLog() {
       div.textContent = log.message;
     } else {
       var time = (log.ts||'').slice(11,19);
-      div.textContent = '['+time+'] ['+(log.category||'')+'] '+log.message;
+      div.textContent = '['+formatShortTs(log.ts)+'] ['+(log.category||'')+'] '+log.message;
     }
     var panel = document.getElementById('live-log-panel');
     panel.appendChild(div);
@@ -516,7 +655,7 @@ function toggleLiveLog() {
 async function loadLogs() {
   var logs = await GET('/api/logs?limit=200');
   document.querySelector('#logs-tbl tbody').innerHTML = logs.map(l => {
-    return '<tr><td style="white-space:nowrap">'+(l.ts||'').slice(0,19)+'</td><td><span class="badge">'+esc(l.category)+'</span></td><td style="font-size:12px">'+esc(l.message)+'</td></tr>';
+    return '<tr><td style="white-space:nowrap">'+formatTs(l.ts)+'</td><td><span class="badge">'+esc(l.category)+'</span></td><td style="font-size:12px">'+esc(l.message)+'</td></tr>';
   }).join('') || '<tr><td colspan="3" class="empty">暂无日志</td></tr>';
 }
 
@@ -541,15 +680,6 @@ function switchDashTab(tab) {
   if (tab === 'progress') loadDashboard();
   if (tab === 'intervention') {
     loadIntervention();
-    GET('/api/intervention').then(function(items) {
-      var badge = document.getElementById('intervention-count');
-      if (items.length > 0) {
-        badge.style.display = '';
-        badge.textContent = items.length;
-      } else {
-        badge.style.display = 'none';
-      }
-    });
   }
 }
 
@@ -563,6 +693,13 @@ function navigateTo(page) {
 function toggleMultiModel() {
   var enabled = document.getElementById('d-multi-model').value === 'true';
   document.getElementById('multi-model-cfg').style.display = enabled ? '' : 'none';
+}
+
+function toggleSingleProviderFields() {
+  var prov = document.getElementById('d-provider').value;
+  var showGlobalHint = prov === 'AI';
+  document.getElementById('d-provider-hint-group').style.display = showGlobalHint ? '' : 'none';
+  document.getElementById('d-tokens-group').style.display = showGlobalHint ? 'none' : '';
 }
 
 function toggleModelFields(idx) {
@@ -601,3 +738,4 @@ document.addEventListener('change', function(e) {
 // Init
 loadDashboard();
 loadIntervention();
+startDashboardAutoRefresh();

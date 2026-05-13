@@ -855,12 +855,7 @@ class EnsembleTiku(Tiku):
         return self._referee_vote(unique_answers, enriched, course_context)
 
     def _query_model(self, idx: int, model: Tiku, q_info: dict, course_context: str = None):
-        """单个模型查询（供线程池调用）
-
-        注意：这里直接调用 _query() 而非 query()，跳过各模型独立的缓存检查，
-        以保证多模型并行时各自独立作答，不被共享缓存互相干扰。
-        缓存统一由外层 Tiku.query() 在得到最终共识答案后写入。
-        """
+        """单个模型查询（供线程池调用）"""
         logger.debug(f"多模型: 模型 {idx} ({model.name}) 开始查询")
         return model._query(q_info, course_context=course_context)
 
