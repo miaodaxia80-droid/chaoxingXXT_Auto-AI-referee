@@ -11,6 +11,10 @@ DEFAULT_SETTINGS = {
     "max_concurrent_accounts": 2,
     "course_progress_workers": 3,
     "show_system_metrics": True,
+    "scheduler_paused": False,
+    "run_window_enabled": False,
+    "run_window_start": "08:00",
+    "run_window_end": "23:00",
 }
 
 SCHEMA = """
@@ -82,10 +86,18 @@ def _normalize_setting_value(key, value):
         except (TypeError, ValueError):
             value = DEFAULT_SETTINGS[key]
         return max(1, value)
-    if key == "show_system_metrics":
+    if key in {"show_system_metrics", "scheduler_paused", "run_window_enabled"}:
         if isinstance(value, str):
             return value.strip().lower() in {"1", "true", "yes", "on"}
         return bool(value)
+    if key in {"run_window_start", "run_window_end"}:
+        value = str(value or DEFAULT_SETTINGS[key]).strip()
+        parts = value.split(":")
+        if len(parts) != 2 or not all(part.isdigit() for part in parts):
+            return DEFAULT_SETTINGS[key]
+        hour = max(0, min(23, int(parts[0])))
+        minute = max(0, min(59, int(parts[1])))
+        return f"{hour:02d}:{minute:02d}"
     if key == "timezone":
         value = str(value or DEFAULT_SETTINGS["timezone"]).strip()
         return value or DEFAULT_SETTINGS["timezone"]

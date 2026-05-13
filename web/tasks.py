@@ -1,6 +1,8 @@
 import os
 import sys
 import threading
+from datetime import datetime, time as dt_time
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -13,8 +15,10 @@ from web.models import (
     add_operation_log,
     create_task,
     get_settings,
+    get_timezone_name,
     get_user,
     now_iso,
+    set_settings,
     update_task_status,
 )
 from web.tiku_config import build_effective_tiku_config
@@ -124,17 +128,66 @@ def _get_max_concurrent_accounts():
         return 2
 
 
+def _parse_clock(value: str, default: str) -> dt_time:
+    raw = str(value or default).strip()
+    try:
+        hour_text, minute_text = raw.split(":", 1)
+        return dt_time(hour=int(hour_text), minute=int(minute_text))
+    except Exception:
+        fallback_hour, fallback_minute = default.split(":", 1)
+        return dt_time(hour=int(fallback_hour), minute=int(fallback_minute))
+
+
+def _get_current_time():
+    try:
+        tz = ZoneInfo(get_timezone_name())
+    except ZoneInfoNotFoundError:
+        tz = datetime.now().astimezone().tzinfo
+    return datetime.now(tz).time()
+
+
+def _is_within_run_window(settings=None):
+    settings = settings or get_settings()
+    if not settings.get('run_window_enabled'):
+        return True
+
+    start = _parse_clock(settings.get('run_window_start', '08:00'), '08:00')
+    end = _parse_clock(settings.get('run_window_end', '23:00'), '23:00')
+    now_time = _get_current_time()
+
+    if start == end:
+        return True
+    if start < end:
+        return start <= now_time < end
+    return now_time >= start or now_time < end
+
+
+def _scheduler_can_run(settings=None):
+    settings = settings or get_settings()
+    return not settings.get('scheduler_paused') and _is_within_run_window(settings)
+
+
 def get_scheduler_stats():
+    settings = get_settings()
     with _scheduler_cond:
         return {
             'pending': len(_pending_tasks),
             'active': len(_active_tasks),
             'active_users': len(_active_user_ids),
             'max_concurrent_accounts': _get_max_concurrent_accounts(),
+            'paused': bool(settings.get('scheduler_paused')),
+            'run_window_enabled': bool(settings.get('run_window_enabled')),
+            'run_window_start': settings.get('run_window_start', '08:00'),
+            'run_window_end': settings.get('run_window_end', '23:00'),
+            'within_run_window': _is_within_run_window(settings),
+            'can_start_new_tasks': _scheduler_can_run(settings),
         }
 
 
 def _pick_schedulable_task_locked():
+    if not _scheduler_can_run():
+        return None
+
     if len(_active_tasks) >= _get_max_concurrent_accounts():
         return None
 
@@ -311,6 +364,12 @@ def _ensure_scheduler():
         _scheduler_running = True
         thread = threading.Thread(target=_scheduler_loop, daemon=True)
         thread.start()
+
+
+def set_scheduler_paused(paused: bool):
+    set_settings({'scheduler_paused': paused})
+    with _scheduler_cond:
+        _scheduler_cond.notify_all()
 
 
 def start_task(user_id: int, course_id: str, course_title: str, chapter_ids: list = None) -> int:

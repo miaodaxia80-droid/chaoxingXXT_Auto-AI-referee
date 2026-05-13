@@ -20,7 +20,7 @@ from web.models import (
     get_operation_logs,
 )
 from web.system_metrics import get_system_metrics
-from web.tasks import get_scheduler_stats, start_task, stop_task
+from web.tasks import get_scheduler_stats, set_scheduler_paused, start_task, stop_task
 from web.tiku_config import build_effective_tiku_config
 
 api_bp = Blueprint('api', __name__)
@@ -268,6 +268,25 @@ def study_stop(task_id):
 @api_bp.route('/api/study/tasks')
 def study_tasks():
     return jsonify(models.get_tasks())
+
+
+@api_bp.route('/api/study/queue/status')
+def study_queue_status():
+    return jsonify(get_scheduler_stats())
+
+
+@api_bp.route('/api/study/queue/pause', methods=['POST'])
+def study_queue_pause():
+    set_scheduler_paused(True)
+    add_operation_log('study', '任务队列已暂停')
+    return jsonify(ok=True)
+
+
+@api_bp.route('/api/study/queue/resume', methods=['POST'])
+def study_queue_resume():
+    set_scheduler_paused(False)
+    add_operation_log('study', '任务队列已恢复')
+    return jsonify(ok=True)
 
 
 @api_bp.route('/api/settings', methods=['GET'])

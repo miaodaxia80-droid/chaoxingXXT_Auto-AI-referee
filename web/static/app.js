@@ -386,7 +386,10 @@ async function doImport() {
 async function loadStudyUsers() {
   var users = await GET('/api/users');
   userCache = users;
-  var opts = users.map(u => '<option value="'+u.id+'">'+esc(u.username)+'</option>').join('');
+  var opts = users.map(function(u) {
+    var label = u.remark ? (u.remark + '（' + u.username + '）') : u.username;
+    return '<option value="'+u.id+'">'+esc(label)+'</option>';
+  }).join('');
   document.getElementById('study-uid').innerHTML = '<option value="">请选择</option>' + opts;
   document.getElementById('sync-uid').innerHTML = '<option value="">请选择</option>' + opts;
 }
@@ -528,7 +531,18 @@ async function startStudy() {
 }
 
 async function loadTasks() {
-  var tasks = await GET('/api/study/tasks');
+  var results = await Promise.all([GET('/api/study/tasks'), GET('/api/study/queue/status')]);
+  var tasks = results[0];
+  var queue = results[1] || {};
+  var queueState = '运行中';
+  if (queue.paused) {
+    queueState = '已暂停';
+  } else if (queue.run_window_enabled && queue.within_run_window === false) {
+    queueState = '等待时间段';
+  }
+  document.getElementById('queue-state-text').textContent = queueState + ' · ' + (queue.active || 0) + ' 运行 / ' + (queue.pending || 0) + ' 等待';
+  document.getElementById('queue-pause-btn').disabled = !!queue.paused;
+  document.getElementById('queue-resume-btn').disabled = !queue.paused;
   document.querySelector('#task-tbl tbody').innerHTML = tasks.map(t => {
     var statusLabel = t.status==='stopped'?'已停止':t.status==='running'?'运行中':t.status==='done'?'完成':t.status==='error'?'错误':t.status;
     var stopBtn = t.status==='running' ? '<button class="btn sm danger" onclick="stopTask('+t.id+')">停止</button>' : '';
@@ -539,6 +553,18 @@ async function loadTasks() {
 async function stopTask(id) {
   await POST('/api/study/stop/'+id);
   loadTasks();
+}
+
+async function pauseQueue() {
+  await POST('/api/study/queue/pause');
+  loadTasks();
+  loadDashboard();
+}
+
+async function resumeQueue() {
+  await POST('/api/study/queue/resume');
+  loadTasks();
+  loadDashboard();
 }
 
 function viewLog(taskId) {
@@ -568,6 +594,9 @@ async function loadSettings() {
   document.getElementById('g-max-accounts').value = s.max_concurrent_accounts || 2;
   document.getElementById('g-progress-workers').value = s.course_progress_workers || 3;
   document.getElementById('g-show-system-metrics').value = s.show_system_metrics === false ? 'false' : 'true';
+  document.getElementById('g-run-window-enabled').value = s.run_window_enabled === true ? 'true' : 'false';
+  document.getElementById('g-run-window-start').value = s.run_window_start || '08:00';
+  document.getElementById('g-run-window-end').value = s.run_window_end || '23:00';
   document.getElementById('g-provider').value = tc.provider || '';
   document.getElementById('g-tokens').value = tc.tokens || '';
   document.getElementById('g-submit').value = String(tc.submit || 'false');
@@ -584,6 +613,9 @@ async function saveSettings() {
     max_concurrent_accounts: parseInt(document.getElementById('g-max-accounts').value, 10) || 2,
     course_progress_workers: parseInt(document.getElementById('g-progress-workers').value, 10) || 3,
     show_system_metrics: document.getElementById('g-show-system-metrics').value === 'true',
+    run_window_enabled: document.getElementById('g-run-window-enabled').value === 'true',
+    run_window_start: document.getElementById('g-run-window-start').value || '08:00',
+    run_window_end: document.getElementById('g-run-window-end').value || '23:00',
     tiku_config: {
       provider: document.getElementById('g-provider').value,
       tokens: document.getElementById('g-tokens').value,

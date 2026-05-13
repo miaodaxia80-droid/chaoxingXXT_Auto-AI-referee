@@ -123,6 +123,28 @@ class RegressionTests(unittest.TestCase):
         self.assertFalse(payload["show_system_metrics"])
         self.assertIsNone(payload["system_metrics"])
 
+    def test_run_window_settings_are_normalized(self):
+        models.set_settings({
+            "run_window_enabled": True,
+            "run_window_start": "7:5",
+            "run_window_end": "23:7",
+        })
+        settings = models.get_settings()
+        self.assertTrue(settings["run_window_enabled"])
+        self.assertEqual(settings["run_window_start"], "07:05")
+        self.assertEqual(settings["run_window_end"], "23:07")
+
+    def test_queue_pause_and_resume_update_scheduler_state(self):
+        pause_response = self.client.post("/api/study/queue/pause")
+        self.assertEqual(pause_response.status_code, 200)
+        paused = self.client.get("/api/study/queue/status").get_json()
+        self.assertTrue(paused["paused"])
+
+        resume_response = self.client.post("/api/study/queue/resume")
+        self.assertEqual(resume_response.status_code, 200)
+        resumed = self.client.get("/api/study/queue/status").get_json()
+        self.assertFalse(resumed["paused"])
+
     def test_user_ai_config_can_fall_back_to_global_defaults(self):
         settings = {
             "tiku_config": {
