@@ -127,6 +127,16 @@ class RegressionTests(unittest.TestCase):
         timestamp = models.now_iso()
         self.assertTrue(timestamp.endswith("+00:00"))
 
+    def test_create_app_can_skip_reconciling_incomplete_tasks(self):
+        models.create_user({"username": "demo", "password": "pw"})
+        task_id = models.create_task(1, "course-1", "Course 1")
+        models.update_task_status(task_id, "running")
+
+        create_app(reconcile_tasks=False)
+
+        task = models.get_task(task_id)
+        self.assertEqual(task["status"], "running")
+
     def test_dashboard_can_disable_system_metrics_panel(self):
         models.set_settings({"show_system_metrics": False})
         payload = self.client.get("/api/dashboard").get_json()
