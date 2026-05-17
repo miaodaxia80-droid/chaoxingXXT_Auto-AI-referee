@@ -2,13 +2,20 @@
 import argparse
 import configparser
 import enum
+import getpass
 import sys
 import threading
 import time
 import traceback
 from concurrent.futures.thread import ThreadPoolExecutor
 from dataclasses import dataclass
-from queue import PriorityQueue, ShutDown
+try:
+    from queue import PriorityQueue, ShutDown
+except ImportError:  # Python < 3.13 compatibility for tests and local tooling.
+    from queue import PriorityQueue
+
+    class ShutDown(Exception):
+        pass
 from threading import RLock
 from typing import Any
 
@@ -45,6 +52,26 @@ def str_to_bool(value):
     if isinstance(value, bool):
         return value
     return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def normalize_speed(value, default=1.0):
+    try:
+        speed = float(value)
+    except (TypeError, ValueError):
+        speed = default
+    return min(2.0, max(1.0, speed))
+
+
+def normalize_jobs(value, default=4):
+    try:
+        jobs = int(value)
+    except (TypeError, ValueError):
+        jobs = default
+    return max(1, jobs)
+
+
+def normalize_notopen_action(value):
+    return value if value in {"retry", "continue"} else "retry"
 
 
 def parse_args():
@@ -109,12 +136,11 @@ def load_config_from_file(config_path):
             common_config["course_list"] = [item.strip() for item in common_config["course_list"].split(",") if item.strip()]
         # 处理speed，将字符串转换为浮点数
         if "speed" in common_config:
-            common_config["speed"] = float(common_config["speed"])
+            common_config["speed"] = normalize_speed(common_config["speed"])
         if "jobs" in common_config:
-            common_config["jobs"] = int(common_config["jobs"])
+            common_config["jobs"] = normalize_jobs(common_config["jobs"])
         # 处理notopen_action，设置默认值为retry
-        if "notopen_action" not in common_config:
-            common_config["notopen_action"] = "retry"
+        common_config["notopen_action"] = normalize_notopen_action(common_config.get("notopen_action"))
         if "use_cookies" in common_config:
             common_config["use_cookies"] = str_to_bool(common_config["use_cookies"])
         if "username" in common_config and common_config["username"] is not None:
@@ -146,9 +172,9 @@ def build_config_from_args(args):
         "username": args.username,
         "password": args.password,
         "course_list": [item.strip() for item in args.list.split(",") if item.strip()] if args.list else None,
-        "speed": args.speed if args.speed else 1.0,
-        "jobs": args.jobs,
-        "notopen_action": args.notopen_action if args.notopen_action else "retry",
+        "speed": normalize_speed(args.speed),
+        "jobs": normalize_jobs(args.jobs),
+        "notopen_action": normalize_notopen_action(args.notopen_action),
         "user_agent": None,
     }
     return common_config, {}, {}
@@ -173,7 +199,7 @@ def init_chaoxing(common_config, tiku_config):
     # 如果没有提供用户名密码，从命令行获取
     if (not username or not password) and not use_cookies:
         username = input("请输入你的手机号, 按回车确认\n手机号:")
-        password = input("请输入你的密码, 按回车确认\n密码:")
+        password = getpass.getpass("请输入你的密码, 按回车确认\n密码:")
     
     account = Account(username, password, user_agent=common_config.get("user_agent") or None)
 
@@ -246,7 +272,7 @@ class JobProcessor:
                  on_chapter_complete=None):
         self.chaoxing = chaoxing
         self.course = course
-        self.speed = config["speed"]
+        self.speed = normalize_speed(config.get("speed", 1.0))
         self.max_tries = 5
         self.tasks = tasks
         self.failed_tasks: list[ChapterTask] = []
@@ -254,8 +280,11 @@ class JobProcessor:
         self.retry_queue: PriorityQueue[ChapterTask] = PriorityQueue()
         self.wait_queue: PriorityQueue[ChapterTask] = PriorityQueue()
         self.threads: list[threading.Thread] = []
-        self.worker_num = config["jobs"]
-        self.config = config
+        self.worker_num = normalize_jobs(config.get("jobs", 4))
+        self.config = dict(config)
+        self.config["speed"] = self.speed
+        self.config["jobs"] = self.worker_num
+        self.config["notopen_action"] = normalize_notopen_action(self.config.get("notopen_action"))
         self.should_stop = config.get("should_stop")
         self.on_chapter_complete = on_chapter_complete
 
@@ -272,7 +301,8 @@ class JobProcessor:
 
         self.task_queue.join()
         time.sleep(0.5)
-        self.task_queue.shutdown()
+        if hasattr(self.task_queue, "shutdown"):
+            self.task_queue.shutdown()
 
 
     @log_error
@@ -506,8 +536,9 @@ def main():
         common_config, tiku_config, notification_config = init_config()
         
         # 强制播放按照配置文件调节
-        common_config["speed"] = min(2.0, max(1.0, common_config.get("speed", 1.0)))
-        common_config["notopen_action"] = common_config.get("notopen_action", "retry")
+        common_config["speed"] = normalize_speed(common_config.get("speed", 1.0))
+        common_config["jobs"] = normalize_jobs(common_config.get("jobs", 4))
+        common_config["notopen_action"] = normalize_notopen_action(common_config.get("notopen_action"))
         
         # 初始化超星实例
         chaoxing = init_chaoxing(common_config, tiku_config)

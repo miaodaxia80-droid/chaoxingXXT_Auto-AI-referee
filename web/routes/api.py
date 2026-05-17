@@ -28,6 +28,12 @@ from web.tiku_config import build_effective_tiku_config
 api_bp = Blueprint('api', __name__)
 
 
+def _str_to_bool(value):
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {'1', 'true', 'yes', 'y', 'on'}
+
+
 def _build_account(user, cookies_data=None):
     return Account(
         user['username'],
@@ -40,7 +46,7 @@ def _build_account(user, cookies_data=None):
 
 def _init_tiku_for_user(user):
     tc = build_effective_tiku_config(user.get('tiku_config') or {}, models.get_settings())
-    multi_model = tc.get('multi_model', 'false') in ('true', 'True', '1', 'yes')
+    multi_model = _str_to_bool(tc.get('multi_model', 'false'))
     if multi_model:
         from api.answer import EnsembleTiku
 

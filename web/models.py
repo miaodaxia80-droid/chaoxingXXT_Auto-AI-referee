@@ -113,6 +113,38 @@ def _normalize_setting_value(key, value):
     return value
 
 
+def _str_to_bool(value):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _normalize_user_value(key, value):
+    if key == "speed":
+        try:
+            speed = float(value)
+        except (TypeError, ValueError):
+            speed = 1.0
+        return min(2.0, max(1.0, speed))
+    if key == "jobs":
+        try:
+            jobs = int(value)
+        except (TypeError, ValueError):
+            jobs = 4
+        return max(1, jobs)
+    if key == "notopen_action":
+        return value if value in {"retry", "continue"} else "retry"
+    if key in {"use_cookies", "enabled"}:
+        return 1 if _str_to_bool(value) else 0
+    if key in {"username", "cookies_data", "remark", "user_agent"}:
+        return str(value or "").strip()
+    if key == "password":
+        return "" if value is None else str(value)
+    return value
+
+
 def _safe_timezone_name(name):
     try:
         ZoneInfo(name)
@@ -199,13 +231,20 @@ def get_user(uid):
         return _parse(conn.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone())
 
 def create_user(data):
+    username = _normalize_user_value("username", data.get("username"))
+    if not username:
+        raise ValueError("username required")
     with get_conn() as conn:
         conn.execute(
             "INSERT INTO users (username,password,use_cookies,speed,jobs,notopen_action,tiku_config,notification_config,remark,user_agent,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-            (data['username'], data.get('password',''), data.get('use_cookies',0),
-             data.get('speed',1.0), data.get('jobs',4), data.get('notopen_action','retry'),
+            (username, _normalize_user_value('password', data.get('password','')),
+             _normalize_user_value('use_cookies', data.get('use_cookies',0)),
+             _normalize_user_value('speed', data.get('speed',1.0)),
+             _normalize_user_value('jobs', data.get('jobs',4)),
+             _normalize_user_value('notopen_action', data.get('notopen_action','retry')),
              json.dumps(data.get('tiku_config',{})), json.dumps(data.get('notification_config',{})),
-             data.get('remark',''), data.get('user_agent',''),
+             _normalize_user_value('remark', data.get('remark','')),
+             _normalize_user_value('user_agent', data.get('user_agent','')),
              now_iso(conn))
         )
 
@@ -214,7 +253,10 @@ def update_user(uid, data):
     updates = {}
     for f in fields:
         if f in data:
-            updates[f] = json.dumps(data[f]) if f in ('tiku_config','notification_config') else data[f]
+            if f in ('tiku_config','notification_config'):
+                updates[f] = json.dumps(data[f])
+            else:
+                updates[f] = _normalize_user_value(f, data[f])
     if not updates:
         return
     sql = "UPDATE users SET " + ",".join(f"{k}=?" for k in updates) + " WHERE id=?"
