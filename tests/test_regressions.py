@@ -85,6 +85,45 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(first.session.cookies.get("extra"), "only-first")
         self.assertIsNone(second.session.cookies.get("extra"))
 
+    def test_login_request_uses_account_user_agent(self):
+        class FakeSession:
+            def __init__(self):
+                self.headers = {}
+                self.cookies = {}
+                self.last_headers = None
+
+            def post(self, _url, headers=None, data=None):
+                self.last_headers = headers
+                return SimpleNamespace(
+                    text='{"status": false, "msg2": "bad"}',
+                    json=lambda: {"status": False, "msg2": "bad"},
+                )
+
+        fake_session = FakeSession()
+        account = Account("user-a", "pw", user_agent="CustomAgent/1.0", use_cookie_file=False)
+
+        with mock.patch("api.base.SessionManager.create_session", return_value=fake_session):
+            result = Chaoxing(account=account).login(login_with_cookies=False)
+
+        self.assertFalse(result["status"])
+        self.assertEqual(fake_session.last_headers["User-Agent"], "CustomAgent/1.0")
+
+    def test_uid_cookie_aliases_are_supported(self):
+        cx = Chaoxing(account=Account("user-a", "pw", cookies_data="uid=1001", use_cookie_file=False))
+        self.assertEqual(cx.get_uid(), "1001")
+
+    def test_job_processor_normalizes_worker_config(self):
+        processor = main.JobProcessor(
+            SimpleNamespace(),
+            {},
+            [],
+            {"speed": 0, "jobs": 0, "notopen_action": "invalid"},
+        )
+
+        self.assertEqual(processor.speed, 1.0)
+        self.assertEqual(processor.worker_num, 1)
+        self.assertEqual(processor.config["notopen_action"], "retry")
+
     def test_get_courses_progress_fetches_without_parallel_overlap(self):
         models.create_user({"username": "demo", "password": "pw"})
         models.update_user(1, {"cookies_data": "uid=demo", "use_cookies": 1})
@@ -255,6 +294,39 @@ class RegressionTests(unittest.TestCase):
         self.assertEqual(effective["key"], "global-key")
         self.assertEqual(effective["model"], "gpt-global")
         self.assertIn('"endpoint": "https://global.example/v1"', effective["models"])
+
+    def test_user_runtime_config_is_normalized_before_storage(self):
+        models.create_user({
+            "username": " demo ",
+            "password": "pw",
+            "speed": 9,
+            "jobs": 0,
+            "notopen_action": "bad",
+            "use_cookies": "yes",
+            "remark": "  备注  ",
+        })
+
+        user = models.get_user(1)
+        self.assertEqual(user["username"], "demo")
+        self.assertEqual(user["speed"], 2.0)
+        self.assertEqual(user["jobs"], 1)
+        self.assertEqual(user["notopen_action"], "retry")
+        self.assertEqual(user["use_cookies"], 1)
+        self.assertEqual(user["remark"], "备注")
+
+        models.update_user(1, {"speed": 0.5, "jobs": "bad", "enabled": "false"})
+        user = models.get_user(1)
+        self.assertEqual(user["speed"], 1.0)
+        self.assertEqual(user["jobs"], 4)
+        self.assertEqual(user["enabled"], 0)
+
+    def test_filter_points_by_ids_matches_numeric_and_string_ids(self):
+        points = [{"id": 1}, {"id": "2"}, {"id": 3}]
+
+        self.assertEqual(
+            web_tasks._filter_points_by_ids(points, ["1", 2]),
+            [{"id": 1}, {"id": "2"}],
+        )
 
     def test_intervention_records_can_be_cleared(self):
         models.create_user({"username": "demo", "password": "pw"})

@@ -6,7 +6,7 @@ import threading
 import time
 from enum import Enum
 from hashlib import md5
-from typing import Self, Optional, Literal
+from typing import Optional, Literal
 
 import requests
 from loguru import logger
@@ -60,6 +60,10 @@ class SessionManager:
     def refresh_session_cookies(cls, session: requests.Session, account: Optional["Account"] = None):
         session.cookies.clear()
         session.cookies.update(cls.resolve_cookies(account))
+
+
+def _has_uid_cookie(session: requests.Session) -> bool:
+    return any(session.cookies.get(name) for name in ("_uid", "UID", "uid"))
 
 
 class Account:
@@ -160,7 +164,7 @@ class Chaoxing:
             "independentId": 0,
         }
         logger.trace("正在尝试登录...")
-        resp = _session.post(_url, headers=gc.HEADERS, data=_data)
+        resp = _session.post(_url, headers=dict(_session.headers), data=_data)
         try:
             resp_json = resp.json()
         except Exception:
@@ -183,7 +187,7 @@ class Chaoxing:
 
     def _validate_cookie_session(self) -> bool:
         session = self.session
-        if not session.cookies.get("_uid"):
+        if not _has_uid_cookie(session):
             return False
 
         test_session = SessionManager.create_session()
@@ -216,6 +220,8 @@ class Chaoxing:
             return s.cookies["_uid"]
         if "UID" in s.cookies:
             return s.cookies["UID"]
+        if "uid" in s.cookies:
+            return s.cookies["uid"]
         raise ValueError("Cannot get uid !")
 
     def get_course_list(self):
@@ -870,25 +876,27 @@ class Chaoxing:
 
         del questions["questions"]
 
+        submit_headers = {
+            "Host": "mooc1.chaoxing.com",
+            "sec-ch-ua-platform": '"Windows"',
+            "X-Requested-With": "XMLHttpRequest",
+            "Accept": "application/json, text/javascript, */*; q=0.01",
+            "sec-ch-ua": '"Microsoft Edge";v="129", "Not=A?Brand";v="8", "Chromium";v="129"',
+            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+            "sec-ch-ua-mobile": "?0",
+            "Origin": "https://mooc1.chaoxing.com",
+            "Sec-Fetch-Site": "same-origin",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Dest": "empty",
+            # "Referer": "https://mooc1.chaoxing.com/mooc-ans/work/doHomeWorkNew?courseId=246831735&workAnswerId=52680423&workId=37778125&api=1&knowledgeid=913820156&classId=107515845&oldWorkId=07647c38d8de4c648a9277c5bed7075a&jobid=work-07647c38d8de4c648a9277c5bed7075a&type=&isphone=false&submit=false&enc=1d826aab06d44a1198fc983ed3d243b1&cpi=338350298&mooc2=1&skipHeader=true&originJobId=work-07647c38d8de4c648a9277c5bed7075a",
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6,ja;q=0.5",
+        }
+        submit_headers["User-Agent"] = _session.headers.get("User-Agent", gc.HEADERS["User-Agent"])
+
         res = _session.post(
             "https://mooc1.chaoxing.com/mooc-ans/work/addStudentWorkNew",
             data=questions,
-            headers={
-                "Host": "mooc1.chaoxing.com",
-                "sec-ch-ua-platform": '"Windows"',
-                "X-Requested-With": "XMLHttpRequest",
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36 Edg/129.0.0.0",
-                "Accept": "application/json, text/javascript, */*; q=0.01",
-                "sec-ch-ua": '"Microsoft Edge";v="129", "Not=A?Brand";v="8", "Chromium";v="129"',
-                "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-                "sec-ch-ua-mobile": "?0",
-                "Origin": "https://mooc1.chaoxing.com",
-                "Sec-Fetch-Site": "same-origin",
-                "Sec-Fetch-Mode": "cors",
-                "Sec-Fetch-Dest": "empty",
-                # "Referer": "https://mooc1.chaoxing.com/mooc-ans/work/doHomeWorkNew?courseId=246831735&workAnswerId=52680423&workId=37778125&api=1&knowledgeid=913820156&classId=107515845&oldWorkId=07647c38d8de4c648a9277c5bed7075a&jobid=work-07647c38d8de4c648a9277c5bed7075a&type=&isphone=false&submit=false&enc=1d826aab06d44a1198fc983ed3d243b1&cpi=338350298&mooc2=1&skipHeader=true&originJobId=work-07647c38d8de4c648a9277c5bed7075a",
-                "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6,ja;q=0.5",
-            },
+            headers=submit_headers,
         )
         if res.status_code == 200:
             res_json = res.json()

@@ -179,6 +179,35 @@ def _scheduler_can_run(settings=None):
     return not settings.get('scheduler_paused') and _is_within_run_window(settings)
 
 
+def _str_to_bool(value):
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {'1', 'true', 'yes', 'y', 'on'}
+
+
+def _normalize_speed(value):
+    try:
+        speed = float(value)
+    except (TypeError, ValueError):
+        speed = 1.0
+    return min(2.0, max(1.0, speed))
+
+
+def _normalize_jobs(value):
+    try:
+        jobs = int(value)
+    except (TypeError, ValueError):
+        jobs = 4
+    return max(1, jobs)
+
+
+def _filter_points_by_ids(points, chapter_ids):
+    if not chapter_ids:
+        return list(points)
+    chapter_id_set = {str(chapter_id) for chapter_id in chapter_ids}
+    return [point for point in points if str(point.get('id')) in chapter_id_set]
+
+
 def get_scheduler_stats():
     settings = get_settings()
     with _scheduler_cond:
@@ -213,7 +242,7 @@ def _pick_schedulable_task_locked():
 
 def _build_chaoxing(user: dict) -> Chaoxing:
     tiku_conf = build_effective_tiku_config(user.get('tiku_config') or {}, get_settings())
-    multi_model = tiku_conf.get('multi_model', 'false') in ('true', 'True', '1', 'yes')
+    multi_model = _str_to_bool(tiku_conf.get('multi_model', 'false'))
     if multi_model:
         from api.answer import EnsembleTiku
 
@@ -265,7 +294,7 @@ def _run_task(task_id: int, user_id: int, course_id: str, course_title: str, sto
         _emit_live('login', f'用户 {user["username"]} 登录成功')
 
         all_courses = cx.get_course_list()
-        course = next((c for c in all_courses if c['courseId'] == course_id), None)
+        course = next((c for c in all_courses if str(c['courseId']) == str(course_id)), None)
         if not course:
             raise ValueError(f"Course {course_id} not found")
 
@@ -274,21 +303,22 @@ def _run_task(task_id: int, user_id: int, course_id: str, course_title: str, sto
         update_task_total_chapters(task_id, len(all_points))
 
         config = {
-            'speed': float(user.get('speed', 1.0)),
-            'jobs': int(user.get('jobs', 4)),
-            'notopen_action': user.get('notopen_action', 'retry'),
+            'speed': _normalize_speed(user.get('speed', 1.0)),
+            'jobs': _normalize_jobs(user.get('jobs', 4)),
+            'notopen_action': user.get('notopen_action', 'retry')
+            if user.get('notopen_action') in {'retry', 'continue'} else 'retry',
             'should_stop': stop_event.is_set,
         }
 
         if chapter_ids:
-            selected = [p for p in all_points if p['id'] in chapter_ids]
+            selected = _filter_points_by_ids(all_points, chapter_ids)
             update_task_total_chapters(task_id, len(selected))
             _emit_live('study', f'选择了 {len(selected)}/{len(all_points)} 个章节')
             original_gcp = cx.get_course_point
 
             def filtered_gcp(*args, **kwargs):
                 result = original_gcp(*args, **kwargs)
-                result['points'] = [p for p in result.get('points', []) if p['id'] in chapter_ids]
+                result['points'] = _filter_points_by_ids(result.get('points', []), chapter_ids)
                 return result
 
             cx.get_course_point = filtered_gcp
