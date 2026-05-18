@@ -1,7 +1,4 @@
-# 超星学习通 · 高级后台 v2.0
-
-> 本项目是 [Samueli924/chaoxing](https://github.com/Samueli924/chaoxing) (GPL-3.0) 的衍生作品，
-> 新增了 Web 管理后台、多账号管理、多模型 AI 协同答题、联网搜索等功能。
+# 超星学习通 · 高级后台
 
 <p align="center">
     <a href="https://github.com/Samueli924/chaoxing" target="_blank">
@@ -17,6 +14,14 @@
 ---
 
 ## 更新日志
+
+### v2.0.2
+- 新增运行时间段外自动停止任务，并按未完成章节自动创建恢复任务，下一时间段继续执行
+- 修复运行时间段恢复链路中的章节 ID 记录与恢复逻辑，避免恢复任务选不中章节
+- 系统实时日志补回课程总知识点、当前章节、剩余知识点和视频进度等结构化进度信息
+- 优化 AI 搜题性能：复用 AI Client，支持可配置的有限并发搜题，并可控制仅在题目数较多时启用
+- 全局设置新增实时日志搜题结果展示粒度、自动跟随系统深浅色开关，前端支持默认跟随系统主题
+- 学习中心补充“全选”“选择所有未完成课程”等批量选择能力，并统一列表中的备注优先显示逻辑
 
 ### v2.0.1
 - 修复子进程任务启动时误触发任务状态回收，导致队列中的等待任务直接变成“已停止”的问题
@@ -55,51 +60,9 @@
 - 增加 Docker Web 部署能力，便于树莓派、NAS 等设备运行
 
 ### v1.5.0
-- 项目正式更名为「高级后台」，整合所有模块为统一发行版
-- Web 管理后台功能完整化：用户管理、学习中心、系统日志、实时终端
-- 多模型 AI 协同答题稳定版，裁判模型裁决 + 联网搜索增强
+- 初始高级后台版本，基于原始 CLI 项目扩展出可视化管理能力
+- 引入多模型 AI 协同答题、裁判模型和联网搜索增强
 - 保留原有 CLI 工作流，兼容配置文件与命令行运行模式
-- README 全面改版，补充架构说明与使用文档
-
-### v1.4.0
-- 新增 `EnsembleTiku` 多模型并行答题框架（3 模型 + Referee 裁决）
-- 新增 `api/web_search.py` 联网搜索模块（DuckDuckGo 免费 / 自定义 API）
-- 新增人工接管面板：缺覆盖率、答题失败、章节跳过自动标记
-- Cookie 登录到期自动回退账号密码登录，刷新后更新持久化 cookie
-- 课程名称注入 AI prompt 上下文，提高专业领域答题准确率
-
-### v1.3.0
-- 新增任务队列系统（`web/tasks.py`）：单线程顺序执行，支持 stop 信号安全中断
-- 新增 SSE 章节进度实时推送（`/api/stream/<task_id>`）
-- 新增全局终端日志直播广播（`/api/log-stream`），200 条环形缓冲区
-- 章节日志持久化到 SQLite，前端轮询 + SSE 双通道保障
-- 新增 `ChapterResult` 枚举与 `on_chapter_complete` 回调链路
-
-### v1.2.0
-- 新增 Flask + SQLite Web 管理后台（`web/` 模块）
-- 新增用户 CRUD、CSV 批量导入、课程列表拉取 API
-- 新增前端 SPA（`index.html` / `app.js` / `style.css`），深色/浅色主题
-- 新增独立设备 User-Agent 随机生成（7 种生成器，覆盖 Chrome/Edge/Safari/Firefox × Win/Mac/Linux）
-- 新增 `docker-compose.yml` Web 模式一键部署
-- 新增 Cookie 字符串解析/序列化模块（`api/cookies.py`）
-
-### v1.1.0
-- 重构日志系统：引入 loguru，支持彩色控制台输出 + 文件轮转（10 MB）
-- 新增自定义异常体系（`api/exceptions.py`）：`LoginError`、`MaxRetryExceeded`、`FontDecodeError` 等
-- 课程筛选逻辑修复：明确指定课程 ID 未匹配时直接报错，不再静默回退学习全部课程
-- 新增 `notopen_action` 重试计数正确递增，修复未开放章节无限重试死循环
-- AI 题库请求限流调整为请求前检查，避免突发请求打到上游 API
-- 新增 `CacheDAO` 缓存文件 JSON 损坏自动恢复与备份机制
-
-### v1.0.0
-- 基于 [Samueli924/chaoxing](https://github.com/Samueli924/chaoxing) v3.1.3 创建独立分支
-- 保留原项目全部 CLI 功能：视频/音频倍速播放、文档阅读、章节测验答题、阅读任务
-- 集成多种题库接口：言溪题库（`TikuYanxi`）、Like 知识库（`TikuLike`）、TikuAdapter、OpenAI 兼容大模型（`AI`）
-- 支持 Server酱 / Qmsg酱 / Bark / Telegram 外部通知推送
-- AES-CBC 登录密码加密，ddddocr 图形验证码识别
-- 超星自定义字体混淆解码（fonttools + font_map_table.json）
-- Docker CLI 模式部署，配置文件驱动运行
-- GPL-3.0 开源协议
 
 ---
 
@@ -108,7 +71,7 @@
 ### 1. Web 可视化管理后台
 - Flask + SQLite，浏览器访问 `http://IP:5002` 即可管理所有账号
 - 实时 SSE 推送：章节进度、终端日志秒级同步到页面
-- 深色/浅色主题切换
+- 深色/浅色主题切换，支持自动跟随系统主题
 
 ### 2. 多账号并行管理
 - 每个账号独立配置：速度、并行数、题库、AI 模型

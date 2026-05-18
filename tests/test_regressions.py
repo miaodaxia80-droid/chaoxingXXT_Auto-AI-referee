@@ -33,6 +33,7 @@ class RegressionTests(unittest.TestCase):
             web_tasks._active_user_ids.clear()
             web_tasks._queue_hide_on_finish.clear()
             web_tasks._stop_events.clear()
+            web_tasks._scheduler_running = False
 
     def _restore_db_path(self):
         models.DB_PATH = self.original_db_path
@@ -137,6 +138,15 @@ class RegressionTests(unittest.TestCase):
         task = models.get_task(task_id)
         self.assertEqual(task["status"], "running")
 
+    def test_reconcile_incomplete_tasks_keeps_pending_tasks_pending(self):
+        models.create_user({"username": "demo", "password": "pw"})
+        task_id = models.create_task(1, "course-1", "Course 1")
+
+        models.reconcile_incomplete_tasks()
+
+        task = models.get_task(task_id)
+        self.assertEqual(task["status"], "pending")
+
     def test_dashboard_can_disable_system_metrics_panel(self):
         models.set_settings({"show_system_metrics": False})
         payload = self.client.get("/api/dashboard").get_json()
@@ -235,7 +245,7 @@ class RegressionTests(unittest.TestCase):
             self.assertNotIn(task_id, web_tasks._active_tasks)
             self.assertNotIn(1, web_tasks._active_user_ids)
 
-    def test_user_ai_config_can_fall_back_to_global_defaults(self):
+    def test_user_ai_config_no_longer_implicitly_falls_back_to_global_defaults(self):
         settings = {
             "tiku_config": {
                 "provider": "AI",
@@ -251,15 +261,47 @@ class RegressionTests(unittest.TestCase):
             },
             settings,
         )
-        self.assertEqual(effective["endpoint"], "https://global.example/v1")
-        self.assertEqual(effective["key"], "global-key")
-        self.assertEqual(effective["model"], "gpt-global")
-        self.assertIn('"endpoint": "https://global.example/v1"', effective["models"])
+        self.assertEqual(effective["endpoint"], "")
+        self.assertEqual(effective["key"], "")
+        self.assertEqual(effective["model"], "")
+        self.assertIn('"endpoint": ""', effective["models"])
+
+    def test_sync_settings_can_sync_only_ai_model_config(self):
+        models.create_user({
+            "username": "demo",
+            "password": "pw",
+            "tiku_config": {
+                "provider": "TikuAdapter",
+                "tokens": "user-token",
+                "endpoint": "",
+                "key": "",
+                "model": "",
+            }
+        })
+        models.set_settings({
+            "tiku_config": {
+                "provider": "AI",
+                "tokens": "global-token",
+                "endpoint": "https://global.example/v1",
+                "key": "global-key",
+                "model": "gpt-global",
+            }
+        })
+
+        response = self.client.post("/api/settings/sync/1", json={"scope": "ai"})
+        self.assertEqual(response.status_code, 200)
+
+        synced = models.get_user(1)["tiku_config"]
+        self.assertEqual(synced["provider"], "TikuAdapter")
+        self.assertEqual(synced["tokens"], "user-token")
+        self.assertEqual(synced["endpoint"], "https://global.example/v1")
+        self.assertEqual(synced["key"], "global-key")
+        self.assertEqual(synced["model"], "gpt-global")
 
     def test_intervention_records_can_be_cleared(self):
         models.create_user({"username": "demo", "password": "pw"})
         task_id = models.create_task(1, "course-1", "Course 1")
-        models.add_chapter_log(task_id, "Chapter 1", "error", "Needs manual review")
+        models.add_chapter_log(task_id, "", "Chapter 1", "error", "Needs manual review")
 
         pending = self.client.get("/api/intervention").get_json()
         self.assertEqual(len(pending), 1)
@@ -273,7 +315,7 @@ class RegressionTests(unittest.TestCase):
     def test_dashboard_logs_can_be_cleared_without_deleting_rows(self):
         models.create_user({"username": "demo", "password": "pw", "remark": "测试账号"})
         task_id = models.create_task(1, "course-1", "Course 1")
-        models.add_chapter_log(task_id, "Chapter 1", "success", "")
+        models.add_chapter_log(task_id, "", "Chapter 1", "success", "")
 
         before = models.get_recent_logs()
         self.assertEqual(len(before), 1)
@@ -319,7 +361,7 @@ class RegressionTests(unittest.TestCase):
         models.create_user({"username": "demo", "password": "pw"})
         task_id = models.create_task(1, "course-1", "Course 1")
         models.update_task_total_chapters(task_id, 50)
-        models.add_chapter_log(task_id, "Chapter 1", "success", "")
+        models.add_chapter_log(task_id, "", "Chapter 1", "success", "")
 
         progress = models.get_progress()
         self.assertEqual(progress[0]["done_chapters"], 1)
@@ -347,7 +389,7 @@ class RegressionTests(unittest.TestCase):
                 {"title": "Course"},
                 {"title": "Chapter 1", "has_finished": False},
                 1.0,
-                on_complete=lambda title, state, message: callbacks.append((title, state, message)),
+                on_complete=lambda point, state, message: callbacks.append((point["title"], state, message)),
             )
 
         self.assertEqual(result, main.ChapterResult.STOPPED)
@@ -355,6 +397,32 @@ class RegressionTests(unittest.TestCase):
             callbacks,
             [("Chapter 1", main.ChapterResult.STOPPED, "Stopped by user")],
         )
+
+    def test_schedule_resume_task_creates_pending_task_for_remaining_chapters(self):
+        models.create_user({"username": "demo", "password": "pw"})
+        original_task_id = models.create_task(1, "course-1", "Course 1", chapter_ids=["1", "2", "3"])
+        models.add_chapter_log(original_task_id, "1", "Chapter 1", "success", "")
+
+        fake_cx = SimpleNamespace(
+            login=lambda **_kwargs: {"status": True, "msg": "ok"},
+            get_course_list=lambda: [{"courseId": "course-1", "clazzId": "clazz-1", "cpi": "cpi-1", "title": "Course 1"}],
+            get_course_point=lambda _course_id, _clazz_id, _cpi: {
+                "points": [
+                    {"id": "1", "title": "Chapter 1"},
+                    {"id": "2", "title": "Chapter 2"},
+                    {"id": "3", "title": "Chapter 3"},
+                ]
+            },
+        )
+
+        with mock.patch("web.tasks._build_chaoxing", return_value=fake_cx):
+            resumed_task_id = web_tasks._schedule_resume_task(original_task_id)
+
+        self.assertIsNotNone(resumed_task_id)
+        resumed_task = models.get_task(resumed_task_id)
+        self.assertEqual(resumed_task["status"], "pending")
+        self.assertEqual(resumed_task["chapter_ids"], ["2", "3"])
+        self.assertEqual(resumed_task["resume_from_task_id"], original_task_id)
 
 
 if __name__ == "__main__":

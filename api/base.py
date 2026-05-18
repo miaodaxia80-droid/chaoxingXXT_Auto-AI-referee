@@ -131,6 +131,15 @@ class Chaoxing:
         if account and getattr(account, 'user_agent', None):
             self.session.headers["User-Agent"] = account.user_agent
 
+    def _notify_progress(self, event: str, **payload):
+        callback = getattr(self, "_progress_callback", None)
+        if not callable(callback):
+            return
+        try:
+            callback(event, **payload)
+        except Exception as exc:
+            logger.debug("进度回调异常: {}", exc)
+
     def login(self, login_with_cookies=False):
         if login_with_cookies:
             logger.info("Logging in with cookies")
@@ -274,8 +283,17 @@ class Chaoxing:
             "mooc2": 1
         }
 
-        # 学习界面任务卡片数, 很少有3个的, 但是对于章节解锁任务点少一个都不行, 可以从API /mooc-ans/mycourse/studentstudyAjax获取值, 或者干脆直接加, 但二者都会造成额外的请求
-        for _possible_num in "0123456":
+        try:
+            expected_cards = int(point.get("jobCount", 1) or 1)
+        except (TypeError, ValueError):
+            expected_cards = 1
+        expected_cards = max(1, min(expected_cards, 7))
+        max_cards_to_probe = min(7, expected_cards + 1)
+        consecutive_empty_cards = 0
+
+        # 优先按照章节声明的任务数拉取卡片，并保留 1 个探测余量，
+        # 避免每个章节固定请求 7 次带来的明显卡顿。
+        for _possible_num in range(max_cards_to_probe):
 
             logger.trace("开始读取章节所有任务点...")
 
@@ -292,6 +310,13 @@ class Chaoxing:
                 logger.info("该章节未开放")
                 return [], _job_info
 
+            if not _job_list and not _job_info:
+                consecutive_empty_cards += 1
+                if _possible_num >= expected_cards - 1 or consecutive_empty_cards >= 2:
+                    break
+                continue
+
+            consecutive_empty_cards = 0
             job_list += _job_list
             job_info.update(_job_info)
 
@@ -495,17 +520,31 @@ class Chaoxing:
         wait_time = int(random.uniform(30, 90))
 
         logger.info(f"开始任务: {_job['name']}, 总时长: {duration}s, 已进行: {play_time}s")
+        self._notify_progress(
+            "video_start",
+            course_title=_course.get("title", ""),
+            job_name=_job.get("name", ""),
+            duration=duration,
+            play_time=play_time,
+        )
 
         pbar = tqdm(total=duration, initial=play_time, desc=_job["name"],
                     unit_scale=True, bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt}')
 
         forbidden_retry = 0
         max_forbidden_retry = 2
+        last_progress_emit = int(play_time)
 
         passed, state = self.video_progress_log(_session, _course, _job, _job_info, _dtoken, duration, play_time, _type,headers=headers)
         passed, state = self.video_progress_log(_session, _course, _job, _job_info, _dtoken, duration, duration, _type, headers=headers)
 
         if passed:
+            self._notify_progress(
+                "video_complete",
+                course_title=_course.get("title", ""),
+                job_name=_job.get("name", ""),
+                duration=duration,
+            )
             logger.info("任务瞬间完成: {}", _job['name'])
             return StudyResult.SUCCESS
 
@@ -555,8 +594,25 @@ class Chaoxing:
 
             pbar.n = int(play_time)
             pbar.refresh()
+            current_play_time = int(play_time)
+            if current_play_time >= duration or current_play_time - last_progress_emit >= 15:
+                last_progress_emit = current_play_time
+                self._notify_progress(
+                    "video_progress",
+                    course_title=_course.get("title", ""),
+                    job_name=_job.get("name", ""),
+                    duration=duration,
+                    play_time=current_play_time,
+                    remaining=max(duration - current_play_time, 0),
+                )
             time.sleep(gc.THRESHOLD)
 
+        self._notify_progress(
+            "video_complete",
+            course_title=_course.get("title", ""),
+            job_name=_job.get("name", ""),
+            duration=duration,
+        )
         logger.info("任务完成: {}", _job['name'])
         return StudyResult.SUCCESS
 
@@ -707,6 +763,39 @@ class Chaoxing:
             iter_o = iter(o)
             return all(c in iter_o for c in a)
 
+        def resolve_query_workers(total_questions: int) -> int:
+            if total_questions <= 1:
+                return 1
+            provider_name = type(self.tiku).__name__
+            if provider_name not in {"AI", "SiliconFlow", "EnsembleTiku"}:
+                return 1
+            only_large_sets = str(getattr(self.tiku, "_conf", {}).get("parallel_only_large_sets", "true")).lower() in ("true", "1", "yes")
+            if only_large_sets and total_questions <= 3:
+                return 1
+            try:
+                configured = int(getattr(self.tiku, "_conf", {}).get("parallel_query_workers", 2))
+            except (TypeError, ValueError):
+                configured = 2
+            return max(1, min(total_questions, configured))
+
+        def build_query_runtimes(worker_count: int):
+            runtimes = [self.tiku]
+            for _ in range(1, worker_count):
+                try:
+                    runtimes.append(self.tiku.create_runtime_clone())
+                except Exception as exc:
+                    logger.warning(f"题库运行时克隆失败，回退到单线程搜题: {exc}")
+                    return [self.tiku]
+            return runtimes
+
+        def query_single_question(args):
+            idx, runtime_tiku, q = args
+            query_delay = self.kwargs.get("query_delay", 0)
+            time.sleep(query_delay)
+            logger.debug(f"当前题目信息 -> {q}")
+            res = runtime_tiku.query(q, course_context=_course.get('title', ''))
+            return idx, res
+
         # FIXME: Use tenacity for retrying
         def with_retry(max_retries=3, delay=1):
             def decorator(func):
@@ -780,12 +869,30 @@ class Chaoxing:
         # 搜题
         total_questions = len(questions["questions"])
         found_answers = 0
-        for q in questions["questions"]:
-            logger.debug(f"当前题目信息 -> {q}")
-            # 添加搜题延迟 #428 - 默认0s延迟
-            query_delay = self.kwargs.get("query_delay", 0)
-            time.sleep(query_delay)
-            res = self.tiku.query(q, course_context=_course.get('title', ''))
+        query_workers = resolve_query_workers(total_questions)
+        runtimes = build_query_runtimes(query_workers)
+        if len(runtimes) != query_workers:
+            query_workers = len(runtimes)
+        query_results = [None] * total_questions
+
+        if query_workers <= 1:
+            for idx, q in enumerate(questions["questions"]):
+                _, res = query_single_question((idx, runtimes[0], q))
+                query_results[idx] = res
+        else:
+            from concurrent.futures import ThreadPoolExecutor
+
+            logger.info(f"AI 搜题并发已启用: {query_workers} 线程")
+            tasks = [
+                (idx, runtimes[idx % query_workers], q)
+                for idx, q in enumerate(questions["questions"])
+            ]
+            with ThreadPoolExecutor(max_workers=query_workers) as executor:
+                for idx, res in executor.map(query_single_question, tasks):
+                    query_results[idx] = res
+
+        for idx, q in enumerate(questions["questions"]):
+            res = query_results[idx]
             answer = ""
             if not res:
                 # 随机答题
@@ -838,6 +945,13 @@ class Chaoxing:
             # 填充答案
             q["answerField"][f'answer{q["id"]}'] = answer
             logger.info(f'{q["title"]} 填写答案为 {answer}')
+            self._notify_progress(
+                "quiz_answer",
+                question_title=q["title"],
+                answer=answer,
+                source=q.get(f'answerSource{q["id"]}', "unknown"),
+                raw_result=res,
+            )
         cover_rate = (found_answers / total_questions) * 100
         logger.info(f"章节检测题库覆盖率： {cover_rate:.0f}%")
         # 提交模式  现在与题库绑定,留空直接提交, 1保存但不提交

@@ -15,6 +15,8 @@ from web.models import (
     add_chapter_log,
     add_operation_log,
     create_task,
+    get_chapter_logs,
+    get_pending_tasks,
     get_settings,
     get_task,
     get_timezone_name,
@@ -109,9 +111,9 @@ def unsubscribe_sse(task_id, q):
         pass
 
 
-def _emit(task_id, chapter_title, result, message=''):
-    add_chapter_log(task_id, chapter_title, result, message)
-    payload = {'chapter_title': chapter_title, 'result': result, 'message': message, 'ts': _ts()}
+def _emit(task_id, chapter_id, chapter_title, result, message=''):
+    add_chapter_log(task_id, chapter_id, chapter_title, result, message)
+    payload = {'chapter_id': chapter_id, 'chapter_title': chapter_title, 'result': result, 'message': message, 'ts': _ts()}
     for q in list(_sse_queues.get(task_id, [])):
         try:
             q.put_nowait(payload)
@@ -180,6 +182,7 @@ def _scheduler_can_run(settings=None):
 
 
 def get_scheduler_stats():
+    _ensure_scheduler()
     settings = get_settings()
     with _scheduler_cond:
         return {
@@ -194,6 +197,131 @@ def get_scheduler_stats():
             'within_run_window': _is_within_run_window(settings),
             'can_start_new_tasks': _scheduler_can_run(settings),
         }
+
+
+def _hydrate_pending_tasks_locked():
+    known_ids = {task['task_id'] for task in _pending_tasks} | set(_active_tasks.keys())
+    for task in get_pending_tasks():
+        if task['id'] in known_ids:
+            continue
+        chapter_ids = task.get('chapter_ids') or None
+        if chapter_ids:
+            chapter_ids = [str(chapter_id) for chapter_id in chapter_ids]
+        _pending_tasks.append({
+            'task_id': task['id'],
+            'user_id': task['user_id'],
+            'course_id': task['course_id'],
+            'course_title': task['course_title'],
+            'chapter_ids': chapter_ids,
+        })
+
+
+def _target_chapter_ids_for_task(task: dict, all_points: list[dict]) -> list[str]:
+    selected_ids = task.get('chapter_ids') or []
+    if selected_ids:
+        return [str(chapter_id) for chapter_id in selected_ids]
+    return [str(point['id']) for point in all_points]
+
+
+def _completed_chapter_ids_for_task(task_id: int, all_points: list[dict]) -> set[str]:
+    completed_ids: set[str] = set()
+    title_to_ids: dict[str, list[str]] = {}
+    for point in all_points:
+        title_to_ids.setdefault(point['title'], []).append(str(point['id']))
+
+    for log in get_chapter_logs(task_id):
+        if log.get('result') != 'success':
+            continue
+        if log.get('chapter_id'):
+            completed_ids.add(str(log['chapter_id']))
+            continue
+        title = log.get('chapter_title')
+        if not title:
+            continue
+        ids = title_to_ids.get(title) or []
+        if ids:
+            completed_ids.add(ids[0])
+    return completed_ids
+
+
+def _build_resume_payload_from_task(task_id: int):
+    task = get_task(task_id)
+    if not task:
+        return None
+
+    user = get_user(task['user_id'])
+    if not user:
+        return None
+
+    try:
+        cx = _build_chaoxing(user)
+        result = cx.login(login_with_cookies=bool(user.get('use_cookies')))
+        if not result.get('status'):
+            _emit_live('error', f'任务 #{task_id} 计算恢复章节失败: {result.get("msg")}')
+            return None
+        courses = cx.get_course_list()
+        course = next((item for item in courses if item['courseId'] == task['course_id']), None)
+        if not course:
+            _emit_live('error', f'任务 #{task_id} 计算恢复章节失败: 未找到课程 {task["course_id"]}')
+            return None
+        point_list = cx.get_course_point(course['courseId'], course['clazzId'], course['cpi'])
+        all_points = point_list.get('points', [])
+    except Exception as exc:
+        _emit_live('error', f'任务 #{task_id} 计算恢复章节失败: {exc}')
+        return None
+
+    target_ids = _target_chapter_ids_for_task(task, all_points)
+    completed_ids = _completed_chapter_ids_for_task(task_id, all_points)
+    remaining_ids = [chapter_id for chapter_id in target_ids if chapter_id not in completed_ids]
+    if not remaining_ids:
+        return None
+
+    return {
+        'user_id': task['user_id'],
+        'course_id': task['course_id'],
+        'course_title': task['course_title'],
+        'chapter_ids': remaining_ids,
+        'resume_from_task_id': task_id,
+    }
+
+
+def _schedule_resume_task(task_id: int):
+    resume_payload = _build_resume_payload_from_task(task_id)
+    if not resume_payload:
+        _emit_live('system', f'任务 #{task_id} 已到时间段外停止，无需恢复剩余章节')
+        return None
+
+    with _scheduler_cond:
+        _hydrate_pending_tasks_locked()
+        for pending in _pending_tasks:
+            if (
+                pending['user_id'] == resume_payload['user_id']
+                and pending['course_id'] == resume_payload['course_id']
+                and (pending.get('chapter_ids') or []) == resume_payload['chapter_ids']
+            ):
+                return pending['task_id']
+
+        new_task_id = create_task(
+            resume_payload['user_id'],
+            resume_payload['course_id'],
+            resume_payload['course_title'],
+            chapter_ids=resume_payload['chapter_ids'],
+            resume_from_task_id=resume_payload['resume_from_task_id'],
+        )
+        _pending_tasks.append({
+            'task_id': new_task_id,
+            'user_id': resume_payload['user_id'],
+            'course_id': resume_payload['course_id'],
+            'course_title': resume_payload['course_title'],
+            'chapter_ids': resume_payload['chapter_ids'],
+        })
+        _scheduler_cond.notify_all()
+
+    _emit_live(
+        'system',
+        f'任务 #{task_id} 已因运行时间段结束而停止，已创建恢复任务 #{new_task_id}（剩余 {len(resume_payload["chapter_ids"])} 个章节）',
+    )
+    return new_task_id
 
 
 def _pick_schedulable_task_locked():
@@ -246,6 +374,12 @@ def _task_process_entry(task_payload: dict, stop_event):
     )
 
 
+def _add_process_operation_log(category: str, message: str):
+    from web.models import add_operation_log
+
+    add_operation_log(category, message)
+
+
 def _run_task(task_id: int, user_id: int, course_id: str, course_title: str, stop_event: threading.Event,
               chapter_ids: list = None):
     update_task_status(task_id, 'running')
@@ -271,7 +405,11 @@ def _run_task(task_id: int, user_id: int, course_id: str, course_title: str, sto
 
         point_list = cx.get_course_point(course['courseId'], course['clazzId'], course['cpi'])
         all_points = point_list.get('points', [])
-        update_task_total_chapters(task_id, len(all_points))
+        total_chapters = len(all_points)
+        update_task_total_chapters(task_id, total_chapters)
+        progress_state = {'completed': 0, 'total': total_chapters}
+        settings = get_settings()
+        _add_process_operation_log('progress', f"课程《{course_title}》共识别到 {total_chapters} 个知识点")
 
         config = {
             'speed': float(user.get('speed', 1.0)),
@@ -281,14 +419,18 @@ def _run_task(task_id: int, user_id: int, course_id: str, course_title: str, sto
         }
 
         if chapter_ids:
-            selected = [p for p in all_points if p['id'] in chapter_ids]
-            update_task_total_chapters(task_id, len(selected))
+            selected_ids = {str(chapter_id) for chapter_id in chapter_ids}
+            selected = [p for p in all_points if str(p['id']) in selected_ids]
+            total_chapters = len(selected)
+            progress_state['total'] = total_chapters
+            update_task_total_chapters(task_id, total_chapters)
             _emit_live('study', f'选择了 {len(selected)}/{len(all_points)} 个章节')
+            _add_process_operation_log('progress', f"课程《{course_title}》本次只学习 {len(selected)} 个知识点（总共 {len(all_points)} 个）")
             original_gcp = cx.get_course_point
 
             def filtered_gcp(*args, **kwargs):
                 result = original_gcp(*args, **kwargs)
-                result['points'] = [p for p in result.get('points', []) if p['id'] in chapter_ids]
+                result['points'] = [p for p in result.get('points', []) if str(p['id']) in selected_ids]
                 return result
 
             cx.get_course_point = filtered_gcp
@@ -296,28 +438,103 @@ def _run_task(task_id: int, user_id: int, course_id: str, course_title: str, sto
         import main as main_mod
         from main import ChapterResult
 
-        def on_chapter_complete(chapter_title, result, message):
+        def on_progress_event(event, **payload):
+            if event == 'video_start':
+                _add_process_operation_log(
+                    'progress',
+                    f"开始视频任务：{payload.get('job_name','')}（{payload.get('play_time', 0)}/{payload.get('duration', 0)} 秒）",
+                )
+                return
+            if event == 'video_progress':
+                _add_process_operation_log(
+                    'progress',
+                    f"视频进度：{payload.get('job_name','')} {payload.get('play_time', 0)}/{payload.get('duration', 0)} 秒，剩余 {payload.get('remaining', 0)} 秒",
+                )
+                return
+            if event == 'video_complete':
+                _add_process_operation_log(
+                    'progress',
+                    f"视频完成：{payload.get('job_name','')}（总时长 {payload.get('duration', 0)} 秒）",
+                )
+                return
+            if event == 'quiz_answer':
+                source_map = {
+                    'cover': '题库命中',
+                    'random': '随机答案',
+                    'unknown': '未知来源',
+                }
+                source_label = source_map.get(payload.get('source'), payload.get('source', '未知来源'))
+                if settings.get('show_quiz_answer_detail', True):
+                    message = f"搜题结果：{payload.get('question_title','')} -> {payload.get('answer','')}（{source_label}）"
+                else:
+                    message = f"搜题结果：{payload.get('question_title','')}（{source_label}）"
+                _add_process_operation_log(
+                    'progress',
+                    message,
+                )
+
+        cx._progress_callback = on_progress_event
+
+        def on_chapter_start(point, index, total):
+            remaining = max(progress_state['total'] - progress_state['completed'] - 1, 0)
+            _add_process_operation_log(
+                'progress',
+                f"开始章节：{point['title']}（第 {index + 1}/{total} 个，已完成 {progress_state['completed']} 个，剩余知识点 {remaining} 个）",
+            )
+
+        def on_chapter_complete(point, result, message):
             """Callback invoked by process_chapter for each chapter completion."""
+            chapter_id = str(point.get('id', ''))
+            chapter_title = point.get('title', '')
+            progress_state['completed'] += 1
+            remaining = max(progress_state['total'] - progress_state['completed'], 0)
             if result == ChapterResult.SUCCESS:
                 if getattr(cx, '_last_quiz_low_coverage', False):
-                    _emit(task_id, chapter_title, 'unsubmitted', '题库覆盖率不足，仅保存未提交')
+                    _emit(task_id, chapter_id, chapter_title, 'unsubmitted', '题库覆盖率不足，仅保存未提交')
                     _emit_live('study', f'需人工接管(未提交): {chapter_title}')
+                    _add_process_operation_log(
+                        'progress',
+                        f"章节完成：{chapter_title}（未提交，已完成 {progress_state['completed']}/{progress_state['total']}，剩余知识点 {remaining} 个）",
+                    )
                 else:
-                    _emit(task_id, chapter_title, 'success')
+                    _emit(task_id, chapter_id, chapter_title, 'success')
                     _emit_live('study', f'完成: {chapter_title}')
+                    _add_process_operation_log(
+                        'progress',
+                        f"章节完成：{chapter_title}（已完成 {progress_state['completed']}/{progress_state['total']}，剩余知识点 {remaining} 个）",
+                    )
             elif result == ChapterResult.NOT_OPEN:
-                _emit(task_id, chapter_title, 'skipped', 'Not open')
+                _emit(task_id, chapter_id, chapter_title, 'skipped', 'Not open')
                 _emit_live('study', f'跳过(未开放): {chapter_title}')
+                _add_process_operation_log(
+                    'progress',
+                    f"章节跳过：{chapter_title}（未开放，已完成 {progress_state['completed']}/{progress_state['total']}，剩余知识点 {remaining} 个）",
+                )
             elif result == ChapterResult.STOPPED:
-                _emit(task_id, chapter_title, 'skipped', message or 'Stopped by user')
+                _emit(task_id, chapter_id, chapter_title, 'skipped', message or 'Stopped by user')
                 _emit_live('study', f'已停止: {chapter_title}')
+                _add_process_operation_log(
+                    'progress',
+                    f"章节停止：{chapter_title}（已完成 {progress_state['completed']}/{progress_state['total']}，剩余知识点 {remaining} 个）",
+                )
             else:
-                _emit(task_id, chapter_title, 'error', message or 'Unknown error')
+                _emit(task_id, chapter_id, chapter_title, 'error', message or 'Unknown error')
                 _emit_live('study', f'失败: {chapter_title}')
+                _add_process_operation_log(
+                    'progress',
+                    f"章节失败：{chapter_title}（已完成 {progress_state['completed']}/{progress_state['total']}，剩余知识点 {remaining} 个）",
+                )
 
         try:
-            main_mod.process_course(cx, course, config, on_chapter_complete=on_chapter_complete)
+            main_mod.process_course(
+                cx,
+                course,
+                config,
+                on_chapter_complete=on_chapter_complete,
+                on_chapter_start=on_chapter_start,
+            )
         finally:
+            cx._progress_callback = None
             if chapter_ids:
                 cx.get_course_point = original_gcp
 
@@ -325,7 +542,7 @@ def _run_task(task_id: int, user_id: int, course_id: str, course_title: str, sto
         update_task_status(task_id, status)
         _emit_live('study', f'学习结束({status}): {course_title}')
     except Exception as e:
-        _emit(task_id, '', 'error', str(e))
+        _emit(task_id, '', '', 'error', str(e))
         _emit_live('error', f'{course_title}: {e}')
         update_task_status(task_id, 'error')
     finally:
@@ -400,13 +617,27 @@ def _scheduler_loop():
     _emit_live('system', '任务调度器已启动')
     try:
         while True:
+            active_to_stop = []
             with _scheduler_cond:
                 _reap_finished_processes_locked()
-                task = _pick_schedulable_task_locked()
-                if task is None:
+                _hydrate_pending_tasks_locked()
+                settings = get_settings()
+                if settings.get('run_window_enabled') and not _is_within_run_window(settings) and _active_tasks:
+                    active_to_stop = list(_active_tasks.keys())
+                task = None
+                if not active_to_stop:
+                    task = _pick_schedulable_task_locked()
+                if task is None and not active_to_stop:
                     _scheduler_cond.wait(timeout=1)
                     continue
 
+            if active_to_stop:
+                for task_id in active_to_stop:
+                    stop_task(task_id)
+                    _schedule_resume_task(task_id)
+                continue
+
+            with _scheduler_cond:
                 _ensure_process_runtime_env()
                 stop_event = _MP_CTX.Event()
                 _stop_events[task['task_id']] = stop_event
@@ -440,6 +671,7 @@ def _scheduler_loop():
 def _ensure_scheduler():
     global _scheduler_running
     with _scheduler_cond:
+        _hydrate_pending_tasks_locked()
         if _scheduler_running:
             return
         _scheduler_running = True
@@ -454,7 +686,8 @@ def set_scheduler_paused(paused: bool):
 
 
 def start_task(user_id: int, course_id: str, course_title: str, chapter_ids: list = None) -> int:
-    task_id = create_task(user_id, course_id, course_title)
+    normalized_chapter_ids = [str(chapter_id) for chapter_id in chapter_ids] if chapter_ids else None
+    task_id = create_task(user_id, course_id, course_title, chapter_ids=normalized_chapter_ids)
     _ensure_scheduler()
     with _scheduler_cond:
         _pending_tasks.append({
@@ -462,7 +695,7 @@ def start_task(user_id: int, course_id: str, course_title: str, chapter_ids: lis
             'user_id': user_id,
             'course_id': course_id,
             'course_title': course_title,
-            'chapter_ids': chapter_ids,
+            'chapter_ids': normalized_chapter_ids,
         })
         _scheduler_cond.notify_all()
     _emit_live('system', f'任务已加入队列: #{task_id} {course_title}')

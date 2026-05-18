@@ -243,7 +243,7 @@ class ChapterTask:
 
 class JobProcessor:
     def __init__(self, chaoxing: Chaoxing, course: dict[str, Any], tasks: list[ChapterTask], config: dict[str, Any],
-                 on_chapter_complete=None):
+                 on_chapter_complete=None, on_chapter_start=None):
         self.chaoxing = chaoxing
         self.course = course
         self.speed = config["speed"]
@@ -258,6 +258,7 @@ class JobProcessor:
         self.config = config
         self.should_stop = config.get("should_stop")
         self.on_chapter_complete = on_chapter_complete
+        self.on_chapter_start = on_chapter_start
 
     def run(self):
         for task in self.tasks:
@@ -287,9 +288,12 @@ class JobProcessor:
 
             if callable(self.should_stop) and self.should_stop():
                 if self.on_chapter_complete:
-                    self.on_chapter_complete(task.point["title"], ChapterResult.STOPPED, "Stopped by user")
+                    self.on_chapter_complete(task.point, ChapterResult.STOPPED, "Stopped by user")
                 self.task_queue.task_done()
                 continue
+
+            if self.on_chapter_start:
+                self.on_chapter_start(task.point, task.index, len(self.tasks))
 
             task.result = process_chapter(self.chaoxing, self.course, task.point, self.speed,
                                             on_complete=self.on_chapter_complete)
@@ -351,14 +355,14 @@ class JobProcessor:
 
 def process_chapter(chaoxing: Chaoxing, course:dict[str, Any], point:dict[str, Any], speed:float,
                     on_complete=None) -> ChapterResult:
-    """处理单个章节，on_complete(point_title, result, message) 在章节完成时回调"""
+    """处理单个章节，on_complete(point, result, message) 在章节完成时回调"""
     logger.info(f'当前章节: {point["title"]}')
     if hasattr(chaoxing, '_last_quiz_low_coverage'):
         chaoxing._last_quiz_low_coverage = False  # reset per-chapter
     if point["has_finished"]:
         logger.info(f'章节：{point["title"]} 已完成所有任务点')
         if on_complete:
-            on_complete(point["title"], ChapterResult.SUCCESS, '')
+            on_complete(point, ChapterResult.SUCCESS, '')
         return ChapterResult.SUCCESS
     
     # 随机等待，避免请求过快
@@ -371,13 +375,13 @@ def process_chapter(chaoxing: Chaoxing, course:dict[str, Any], point:dict[str, A
     # 发现未开放章节, 根据配置处理
     if job_info.get("notOpen", False):
         if on_complete:
-            on_complete(point["title"], ChapterResult.NOT_OPEN, 'Not open')
+            on_complete(point, ChapterResult.NOT_OPEN, 'Not open')
         return ChapterResult.NOT_OPEN
 
     # 已经默认处理空任务，此处不需要判断
     if not jobs:
         if on_complete:
-            on_complete(point["title"], ChapterResult.SUCCESS, 'No jobs')
+            on_complete(point, ChapterResult.SUCCESS, 'No jobs')
         return ChapterResult.SUCCESS
 
     # TODO: 个别章节很恶心，多到5个点，可以并行处理，将来会让不同课程不同章节的所有任务点共享一个队列，从而实现全局并行
@@ -389,20 +393,20 @@ def process_chapter(chaoxing: Chaoxing, course:dict[str, Any], point:dict[str, A
     for result in job_results:
         if result == StudyResult.STOPPED:
             if on_complete:
-                on_complete(point["title"], ChapterResult.STOPPED, 'Stopped by user')
+                on_complete(point, ChapterResult.STOPPED, 'Stopped by user')
             return ChapterResult.STOPPED
         if result.is_failure():
             if on_complete:
-                on_complete(point["title"], ChapterResult.ERROR, 'Job failed')
+                on_complete(point, ChapterResult.ERROR, 'Job failed')
             return ChapterResult.ERROR
 
     if on_complete:
-        on_complete(point["title"], ChapterResult.SUCCESS, '')
+        on_complete(point, ChapterResult.SUCCESS, '')
     return ChapterResult.SUCCESS
 
 
 
-def process_course(chaoxing: Chaoxing, course:dict[str, Any], config: dict, on_chapter_complete=None):
+def process_course(chaoxing: Chaoxing, course:dict[str, Any], config: dict, on_chapter_complete=None, on_chapter_start=None):
     """处理单个课程，on_chapter_complete(point_title, result, message) 在每个章节完成时回调"""
     logger.info(f"开始学习课程: {course['title']}")
 
@@ -422,7 +426,14 @@ def process_course(chaoxing: Chaoxing, course:dict[str, Any], config: dict, on_c
     for i, point in enumerate(point_list["points"]):
         task = ChapterTask(point=point, index=i)
         tasks.append(task)
-    p = JobProcessor(chaoxing, course, tasks, config, on_chapter_complete=on_chapter_complete)
+    p = JobProcessor(
+        chaoxing,
+        course,
+        tasks,
+        config,
+        on_chapter_complete=on_chapter_complete,
+        on_chapter_start=on_chapter_start,
+    )
     p.run()
 
 

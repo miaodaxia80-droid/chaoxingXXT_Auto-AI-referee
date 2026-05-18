@@ -124,7 +124,8 @@ def dashboard():
         today_done=count_tasks_completed_today(),
         timezone=settings.get('timezone'),
         show_system_metrics=settings.get('show_system_metrics', True),
-        dashboard_show_remark=settings.get('dashboard_show_remark', False),
+        auto_theme_follow_system=settings.get('auto_theme_follow_system', True),
+        list_show_remark=settings.get('list_show_remark', False),
         scheduler=scheduler,
         recent_logs=models.get_recent_logs(50),
         progress=models.get_progress(),
@@ -320,8 +321,26 @@ def put_settings():
 @api_bp.route('/api/settings/sync/<int:uid>', methods=['POST'])
 def sync_settings(uid):
     settings = models.get_settings()
-    if settings.get('tiku_config'):
-        models.update_user(uid, {'tiku_config': settings['tiku_config']})
+    user = models.get_user(uid)
+    if not user:
+        return jsonify(error='not found'), 404
+    payload = request.json or {}
+    scope = payload.get('scope', 'tiku')
+    global_tc = dict(settings.get('tiku_config') or {})
+    user_tc = dict(user.get('tiku_config') or {})
+
+    if scope == 'all':
+        user_tc.update(global_tc)
+    elif scope == 'ai':
+        for key in ('endpoint', 'key', 'model'):
+            user_tc[key] = global_tc.get(key, '')
+    else:
+        for key, value in global_tc.items():
+            if key in ('endpoint', 'key', 'model'):
+                continue
+            user_tc[key] = value
+
+    models.update_user(uid, {'tiku_config': user_tc})
     return jsonify(ok=True)
 
 

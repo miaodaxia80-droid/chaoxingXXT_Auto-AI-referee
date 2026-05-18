@@ -17,7 +17,7 @@
     <a href="#" data-page="settings">全局设置</a>
     <a href="#" data-page="logs">系统日志</a>
   </nav>
-  <div class="sidebar-footer">v2.0.1</div>
+  <div class="sidebar-footer">v2.0.2</div>
 </div>
 <div id="sidebar-overlay" onclick="closeSidebarForMobile()"></div>
 
@@ -146,7 +146,11 @@
             <input id="course-search" placeholder="搜索课程名称、教师、ID..." oninput="filterCourses()" style="margin-bottom:10px">
             <div class="fb" style="margin-bottom:10px; gap:10px">
               <span class="text-sm text-muted" id="course-progress-status">选择用户后先显示课程列表，再异步补课程进度</span>
-              <button class="btn sm ghost" onclick="refreshCourseProgress()">刷新进度</button>
+              <div class="btn-group">
+                <button class="btn sm ghost" onclick="selectAllCourses()">全选</button>
+                <button class="btn sm ghost" id="select-unfinished-btn" onclick="selectAllUnfinishedCourses()" disabled>选择所有未完成课程</button>
+                <button class="btn sm ghost" onclick="refreshCourseProgress()">刷新进度</button>
+              </div>
             </div>
             <div id="course-list" class="course-cards"><div class="empty"><div class="empty-icon"></div>请先选择用户</div></div>
           </div>
@@ -191,6 +195,24 @@
           <div class="form-group"><label class="form-label">课程进度抓取并发</label>
             <input id="g-progress-workers" type="number" min="1" max="10" value="3">
           </div>
+          <div class="form-group"><label class="form-label">AI 搜题并发线程数</label>
+            <input id="g-ai-query-workers" type="number" min="1" max="8" value="2">
+            <div class="form-hint">仅影响 AI / 硅基流动 / 多模型协同搜题阶段，不改变原有请求限速。</div>
+          </div>
+          <div class="form-group"><label class="form-label">仅题目数大于 3 时开启 AI 并发</label>
+            <select id="g-ai-only-large-sets">
+              <option value="true">开启</option>
+              <option value="false">关闭</option>
+            </select>
+            <div class="form-hint">开启后，小章节仍走单线程，避免并发开销反而拖慢；默认开启。</div>
+          </div>
+          <div class="form-group"><label class="form-label">实时日志显示完整搜题结果</label>
+            <select id="g-show-quiz-answer-detail">
+              <option value="true">显示完整答案</option>
+              <option value="false">仅显示命中摘要</option>
+            </select>
+            <div class="form-hint">关闭后，系统实时日志只显示题目来源，不显示具体答案内容。</div>
+          </div>
           <div class="form-group"><label class="form-label">显示系统状态板块</label>
             <select id="g-show-system-metrics">
               <option value="true">开启</option>
@@ -198,12 +220,19 @@
             </select>
             <div class="form-hint">关闭后首页不再展示 CPU、温度、内存和队列概览。</div>
           </div>
-          <div class="form-group"><label class="form-label">首页用户显示备注</label>
-            <select id="g-dashboard-show-remark">
+          <div class="form-group"><label class="form-label">自动跟随系统深浅色</label>
+            <select id="g-auto-theme-follow-system">
+              <option value="true">开启</option>
+              <option value="false">关闭</option>
+            </select>
+            <div class="form-hint">开启后页面会跟随系统深色/浅色自动切换；关闭后只保留手动深浅色切换。</div>
+          </div>
+          <div class="form-group"><label class="form-label">用户名称优先显示备注</label>
+            <select id="g-list-show-remark">
               <option value="false">显示手机号</option>
               <option value="true">优先显示备注</option>
             </select>
-            <div class="form-hint">开启后首页的章节日志、学习进度和人工接管优先显示备注，没有备注时仍显示手机号。</div>
+            <div class="form-hint">开启后，控制台和学习中心任务队列里的用户名称都会优先显示备注，没有备注时仍显示手机号。</div>
           </div>
           <div class="form-group"><label class="form-label">启用运行时间段</label>
             <select id="g-run-window-enabled">
@@ -308,8 +337,15 @@
 </div></div>
 
 <div class="overlay" id="sync-modal"><div class="modal">
-  <h3>同步题库配置</h3>
+  <h3>同步配置到指定用户</h3>
   <div class="form-group"><label class="form-label">目标用户</label><select id="sync-uid"><option value="">请选择</option></select></div>
+  <div class="form-group"><label class="form-label">同步范围</label>
+    <select id="sync-scope">
+      <option value="tiku">仅同步题库配置</option>
+      <option value="ai">仅同步 AI 大模型配置</option>
+      <option value="all">同步题库 + AI 配置</option>
+    </select>
+  </div>
   <div class="modal-footer">
     <button class="btn" onclick="closeModal('sync-modal')">取消</button>
     <button class="btn primary" onclick="doSync()">确认同步</button>
@@ -347,7 +383,14 @@
     <select id="d-provider" onchange="toggleSingleProviderFields()"><option value="">不使用</option><option value="TikuYanxi">言溪题库</option><option value="TikuLike">LIKE 知识库</option><option value="TikuAdapter">TikuAdapter</option><option value="AI">AI 大模型</option><option value="SiliconFlow">硅基流动</option></select>
   </div>
   <div class="form-group" id="d-provider-hint-group" style="display:none">
-    <div class="form-hint">当前账号会直接复用全局设置里的 AI Endpoint、API Key 和 Model，这里无需再填 token。</div>
+    <div class="fb" style="margin-bottom:8px">
+      <span class="form-label" style="margin:0">AI 大模型配置</span>
+      <button class="btn sm ghost" type="button" onclick="syncSingleAiFromGlobal()">从全局设置同步</button>
+    </div>
+    <div class="form-hint" style="margin-bottom:10px">你可以直接继承全局 AI 配置，也可以为当前账号单独自定义。</div>
+    <div class="form-group"><label class="form-label">API Endpoint</label><input id="d-endpoint" placeholder="https://api.openai.com/v1"></div>
+    <div class="form-group"><label class="form-label">API Key / 令牌</label><input id="d-key" type="password" placeholder="sk-..."></div>
+    <div class="form-group"><label class="form-label">Model</label><input id="d-model" placeholder="gpt-4o"></div>
   </div>
   <div class="form-group" id="d-tokens-group"><label class="form-label">Token</label><input id="d-tokens"></div>
   <div class="form-group"><label class="form-label">提交模式</label><select id="d-submit"><option value="false">仅保存</option><option value="true">自动提交</option></select></div>

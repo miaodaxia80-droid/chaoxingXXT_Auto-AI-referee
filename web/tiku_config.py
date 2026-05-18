@@ -4,6 +4,7 @@ import json
 def build_effective_tiku_config(user_tiku_config, settings=None):
     conf = dict(user_tiku_config or {})
     global_conf = dict((settings or {}).get("tiku_config") or {})
+    settings = settings or {}
 
     conf.setdefault("true_list", "正确,对,√,是")
     conf.setdefault("false_list", "错误,错,×,否,不对,不正确")
@@ -27,17 +28,18 @@ def build_effective_tiku_config(user_tiku_config, settings=None):
     conf.setdefault("search_max_results", "3")
     conf.setdefault("voting_strategy", "referee")
     conf.setdefault("referee_model_index", "0")
+    conf.setdefault("parallel_query_workers", str(settings.get("ai_parallel_query_workers", 2)))
+    conf.setdefault("parallel_only_large_sets", "true" if settings.get("ai_parallel_only_large_sets", True) else "false")
 
-    if conf.get("provider") == "AI":
-        for key in ("endpoint", "key", "model"):
-            conf[key] = str(conf.get(key) or global_conf.get(key) or "").strip()
+    for key in ("endpoint", "key", "model"):
+        conf[key] = str(conf.get(key) or "").strip()
 
     model_configs = _parse_models(conf.get("models"))
     if model_configs:
         for model_conf in model_configs:
             if model_conf.get("provider") == "AI":
                 for key in ("endpoint", "key", "model"):
-                    model_conf[key] = str(model_conf.get(key) or global_conf.get(key) or "").strip()
+                    model_conf[key] = str(model_conf.get(key) or "").strip()
         conf["models"] = json.dumps(model_configs, ensure_ascii=False)
 
     return conf

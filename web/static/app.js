@@ -1,9 +1,12 @@
 let editUid = null, sseSource = null, userCache = [], allCourses = [], liveLogSource = null;
 let chapterCache = [];  // [{id, title, has_finished, ...}]
-let appSettings = { timezone: 'Asia/Shanghai', max_concurrent_accounts: 2, course_progress_workers: 3, show_system_metrics: true, dashboard_show_remark: false };
+let appSettings = { timezone: 'Asia/Shanghai', max_concurrent_accounts: 2, course_progress_workers: 3, ai_parallel_query_workers: 2, ai_parallel_only_large_sets: true, show_quiz_answer_detail: true, show_system_metrics: true, auto_theme_follow_system: true, list_show_remark: false };
 let courseLoadToken = 0;
 let dashboardRefreshTimer = null;
 let dashboardRefreshInFlight = false;
+const LIVE_LOG_CURSOR_KEY = 'chaoxing_live_log_cursor';
+const THEME_PREF_KEY = 'theme_preference';
+const systemDarkQuery = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
 const USER_AGENT_GENERATORS = [
   function() {
     var major = 134 + Math.floor(Math.random() * 4);
@@ -45,15 +48,79 @@ const USER_AGENT_GENERATORS = [
 ];
 
 // --- Theme ---
-function toggleTheme() {
-  const dark = document.documentElement.getAttribute('data-theme') === 'dark';
-  document.documentElement.setAttribute('data-theme', dark ? '' : 'dark');
-  document.querySelector('.theme-btn').textContent = dark ? '🌙' : '☀️';
-  localStorage.setItem('theme', dark ? 'light' : 'dark');
+function getThemePreference() {
+  const stored = localStorage.getItem(THEME_PREF_KEY) || localStorage.getItem('theme');
+  if (stored === 'dark' || stored === 'light' || stored === 'system') return stored;
+  return 'system';
 }
-if (localStorage.getItem('theme') === 'dark') {
-  document.documentElement.setAttribute('data-theme', 'dark');
-  document.querySelector('.theme-btn').textContent = '☀️';
+
+function resolveThemeMode(preference) {
+  if (preference === 'dark') return 'dark';
+  if (preference === 'light') return 'light';
+  return systemDarkQuery && systemDarkQuery.matches ? 'dark' : 'light';
+}
+
+function updateThemeButton(preference, resolvedMode) {
+  const btn = document.querySelector('.theme-btn');
+  if (!btn) return;
+  if (appSettings.auto_theme_follow_system === false) {
+    btn.textContent = resolvedMode === 'dark' ? '🌙' : '☀️';
+    btn.title = resolvedMode === 'dark' ? '主题：深色（点击切换为浅色）' : '主题：浅色（点击切换为深色）';
+    return;
+  }
+  if (preference === 'system') {
+    btn.textContent = '🖥️';
+    btn.title = '主题：跟随系统（点击切换为深色）';
+    return;
+  }
+  if (preference === 'dark') {
+    btn.textContent = '🌙';
+    btn.title = '主题：深色（点击切换为浅色）';
+    return;
+  }
+  btn.textContent = '☀️';
+  btn.title = '主题：浅色（点击切换为跟随系统）';
+}
+
+function applyThemePreference(preference) {
+  const resolvedMode = resolveThemeMode(preference);
+  if (resolvedMode === 'dark') {
+    document.documentElement.setAttribute('data-theme', 'dark');
+  } else {
+    document.documentElement.removeAttribute('data-theme');
+  }
+  document.documentElement.style.colorScheme = resolvedMode;
+  updateThemeButton(preference, resolvedMode);
+}
+
+function toggleTheme() {
+  if (appSettings.auto_theme_follow_system === false) {
+    const currentMode = resolveThemeMode(getThemePreference());
+    const nextManual = currentMode === 'dark' ? 'light' : 'dark';
+    localStorage.setItem(THEME_PREF_KEY, nextManual);
+    localStorage.removeItem('theme');
+    applyThemePreference(nextManual);
+    return;
+  }
+  const current = getThemePreference();
+  const next = current === 'system' ? 'dark' : current === 'dark' ? 'light' : 'system';
+  localStorage.setItem(THEME_PREF_KEY, next);
+  localStorage.removeItem('theme');
+  applyThemePreference(next);
+}
+
+applyThemePreference(getThemePreference());
+if (systemDarkQuery) {
+  const handleThemeChange = function() {
+    if (getThemePreference() === 'system') {
+      applyThemePreference('system');
+    }
+  };
+  if (typeof systemDarkQuery.addEventListener === 'function') {
+    systemDarkQuery.addEventListener('change', handleThemeChange);
+  } else if (typeof systemDarkQuery.addListener === 'function') {
+    systemDarkQuery.addListener(handleThemeChange);
+  }
 }
 
 // --- Nav ---
@@ -118,10 +185,16 @@ function formatShortTs(ts) {
 }
 
 function dashboardUserLabel(item) {
-  if (appSettings.dashboard_show_remark && item && item.remark) {
+  if (appSettings.list_show_remark && item && item.remark) {
     return item.remark;
   }
   return (item && item.username) || '';
+}
+
+function updateSelectUnfinishedButtonState(enabled) {
+  var btn = document.getElementById('select-unfinished-btn');
+  if (!btn) return;
+  btn.disabled = !enabled;
 }
 
 // --- Dashboard ---
@@ -132,7 +205,9 @@ async function loadDashboard() {
     const d = await GET('/api/dashboard');
     appSettings.timezone = d.timezone || appSettings.timezone;
     appSettings.show_system_metrics = d.show_system_metrics !== false;
-    appSettings.dashboard_show_remark = d.dashboard_show_remark === true;
+    appSettings.auto_theme_follow_system = d.auto_theme_follow_system !== false;
+    appSettings.list_show_remark = d.list_show_remark === true;
+    applyThemePreference(getThemePreference());
     document.getElementById('s-users').textContent = d.total_users;
     document.getElementById('s-running').textContent = d.running_tasks;
     document.getElementById('s-done').textContent = d.today_done || 0;
@@ -290,6 +365,9 @@ function openDrawer(id) {
   var tc = u.tiku_config || {};
   document.getElementById('d-provider').value = tc.provider || '';
   document.getElementById('d-tokens').value = tc.tokens || '';
+  document.getElementById('d-endpoint').value = tc.endpoint || '';
+  document.getElementById('d-key').value = tc.key || '';
+  document.getElementById('d-model').value = tc.model || '';
   document.getElementById('d-submit').value = String(tc.submit || 'false');
   document.getElementById('d-cover').value = tc.cover_rate || 0.9;
   // Multi-model config
@@ -349,6 +427,9 @@ async function saveDrawer() {
   var tiku_config = {
     provider: document.getElementById('d-provider').value,
     tokens: document.getElementById('d-provider').value === 'AI' ? '' : document.getElementById('d-tokens').value,
+    endpoint: document.getElementById('d-provider').value === 'AI' ? document.getElementById('d-endpoint').value.trim() : '',
+    key: document.getElementById('d-provider').value === 'AI' ? document.getElementById('d-key').value.trim() : '',
+    model: document.getElementById('d-provider').value === 'AI' ? document.getElementById('d-model').value.trim() : '',
     submit: document.getElementById('d-submit').value,
     cover_rate: parseFloat(document.getElementById('d-cover').value),
     multi_model: document.getElementById('d-multi-model').value,
@@ -420,6 +501,7 @@ async function loadCourses() {
   var uid = document.getElementById('study-uid').value;
   var cl = document.getElementById('course-list');
   document.getElementById('course-search').value = '';
+  updateSelectUnfinishedButtonState(false);
   if (!uid) {
     cl.innerHTML = '<div class="empty">请先选择用户</div>';
     document.getElementById('course-progress-status').textContent = '选择用户后先显示课程列表，再异步补课程进度';
@@ -446,6 +528,7 @@ async function loadCourseProgress(uid, token) {
   if (token !== courseLoadToken || document.getElementById('study-uid').value !== uid) return;
   if (result.error) {
     document.getElementById('course-progress-status').textContent = '课程进度加载失败：' + result.error;
+    updateSelectUnfinishedButtonState(false);
     return;
   }
   var byId = {};
@@ -457,6 +540,7 @@ async function loadCourseProgress(uid, token) {
     return byId[course.courseId] || course;
   });
   document.getElementById('course-progress-status').textContent = '课程进度已更新（抓取并发 ' + (appSettings.course_progress_workers || 3) + '）';
+  updateSelectUnfinishedButtonState(allCourses.length > 0);
   filterCourses();
 }
 
@@ -465,6 +549,7 @@ function refreshCourseProgress() {
   if (!uid || !allCourses.length) return;
   courseLoadToken += 1;
   document.getElementById('course-progress-status').textContent = '正在刷新课程进度...';
+  updateSelectUnfinishedButtonState(false);
   loadCourseProgress(uid, courseLoadToken);
 }
 
@@ -489,6 +574,34 @@ function renderCourses(courses) {
     html += '</div><div class="cc-id">'+esc(c.courseId)+'</div></label>';
     return html;
   }).join('') || '<div class="empty">暂无匹配课程</div>';
+}
+
+function selectAllUnfinishedCourses() {
+  var btn = document.getElementById('select-unfinished-btn');
+  if (!btn || btn.disabled) return;
+  var unfinishedIds = new Set(
+    allCourses
+      .filter(function(course) {
+        return course.progress_loaded === true && (course.total_points || 0) > 0 && (course.done_points || 0) < (course.total_points || 0);
+      })
+      .map(function(course) { return String(course.courseId); })
+  );
+  if (!unfinishedIds.size) {
+    alert('当前没有可自动勾选的未完成课程');
+    return;
+  }
+  document.querySelectorAll('#course-list input[type="checkbox"]').forEach(function(cb) {
+    var shouldCheck = unfinishedIds.has(String(cb.value));
+    cb.checked = shouldCheck;
+    toggleCard(cb);
+  });
+}
+
+function selectAllCourses() {
+  document.querySelectorAll('#course-list input[type="checkbox"]').forEach(function(cb) {
+    cb.checked = true;
+    toggleCard(cb);
+  });
 }
 
 function filterCourses() {
@@ -566,7 +679,7 @@ async function loadTasks() {
   document.querySelector('#task-tbl tbody').innerHTML = tasks.map(t => {
     var statusLabel = t.status==='stopped'?'已停止':t.status==='running'?'运行中':t.status==='done'?'完成':t.status==='error'?'错误':t.status;
     var stopBtn = t.status==='running' ? '<button class="btn sm danger" onclick="stopTask('+t.id+')">停止</button>' : '';
-    return '<tr><td>'+t.id+'</td><td>'+esc(t.username||'')+'</td><td>'+esc(t.course_title)+'</td><td><span class="badge '+t.status+'">'+statusLabel+'</span></td><td>'+formatTs(t.started_at)+'</td><td class="flex"><button class="btn sm" onclick="viewLog('+t.id+')">日志</button>'+stopBtn+' <button class="btn sm ghost" onclick="deleteTask('+t.id+')">删除</button></td></tr>';
+    return '<tr><td>'+t.id+'</td><td>'+esc(dashboardUserLabel(t))+'</td><td>'+esc(t.course_title)+'</td><td><span class="badge '+t.status+'">'+statusLabel+'</span></td><td>'+formatTs(t.started_at)+'</td><td class="flex"><button class="btn sm" onclick="viewLog('+t.id+')">日志</button>'+stopBtn+' <button class="btn sm ghost" onclick="deleteTask('+t.id+')">删除</button></td></tr>';
   }).join('') || '<tr><td colspan="6" class="empty">暂无任务</td></tr>';
 }
 
@@ -622,8 +735,12 @@ async function loadSettings() {
   document.getElementById('g-timezone').value = s.timezone || 'Asia/Shanghai';
   document.getElementById('g-max-accounts').value = s.max_concurrent_accounts || 2;
   document.getElementById('g-progress-workers').value = s.course_progress_workers || 3;
+  document.getElementById('g-ai-query-workers').value = s.ai_parallel_query_workers || 2;
+  document.getElementById('g-ai-only-large-sets').value = s.ai_parallel_only_large_sets === false ? 'false' : 'true';
+  document.getElementById('g-show-quiz-answer-detail').value = s.show_quiz_answer_detail === false ? 'false' : 'true';
   document.getElementById('g-show-system-metrics').value = s.show_system_metrics === false ? 'false' : 'true';
-  document.getElementById('g-dashboard-show-remark').value = s.dashboard_show_remark === true ? 'true' : 'false';
+  document.getElementById('g-auto-theme-follow-system').value = s.auto_theme_follow_system === false ? 'false' : 'true';
+  document.getElementById('g-list-show-remark').value = s.list_show_remark === true ? 'true' : 'false';
   document.getElementById('g-run-window-enabled').value = s.run_window_enabled === true ? 'true' : 'false';
   document.getElementById('g-run-window-start').value = s.run_window_start || '08:00';
   document.getElementById('g-run-window-end').value = s.run_window_end || '23:00';
@@ -638,12 +755,16 @@ async function loadSettings() {
 }
 
 async function saveSettings() {
-  await PUT('/api/settings', {
+  const payload = {
     timezone: document.getElementById('g-timezone').value.trim() || 'Asia/Shanghai',
     max_concurrent_accounts: parseInt(document.getElementById('g-max-accounts').value, 10) || 2,
     course_progress_workers: parseInt(document.getElementById('g-progress-workers').value, 10) || 3,
+    ai_parallel_query_workers: parseInt(document.getElementById('g-ai-query-workers').value, 10) || 2,
+    ai_parallel_only_large_sets: document.getElementById('g-ai-only-large-sets').value === 'true',
+    show_quiz_answer_detail: document.getElementById('g-show-quiz-answer-detail').value === 'true',
     show_system_metrics: document.getElementById('g-show-system-metrics').value === 'true',
-    dashboard_show_remark: document.getElementById('g-dashboard-show-remark').value === 'true',
+    auto_theme_follow_system: document.getElementById('g-auto-theme-follow-system').value === 'true',
+    list_show_remark: document.getElementById('g-list-show-remark').value === 'true',
     run_window_enabled: document.getElementById('g-run-window-enabled').value === 'true',
     run_window_start: document.getElementById('g-run-window-start').value || '08:00',
     run_window_end: document.getElementById('g-run-window-end').value || '23:00',
@@ -657,7 +778,10 @@ async function saveSettings() {
       key: document.getElementById('g-key').value,
       model: document.getElementById('g-model').value,
     }
-  });
+  };
+  await PUT('/api/settings', payload);
+  appSettings = Object.assign(appSettings, payload);
+  applyThemePreference(getThemePreference());
   alert('保存成功');
   loadDashboard();
 }
@@ -667,7 +791,7 @@ function openSyncModal() { loadStudyUsers(); openModal('sync-modal'); }
 async function doSync() {
   var uid = document.getElementById('sync-uid').value;
   if (!uid) return alert('请选择用户');
-  await POST('/api/settings/sync/'+uid);
+  await POST('/api/settings/sync/'+uid, { scope: document.getElementById('sync-scope').value });
   alert('同步成功');
   closeModal('sync-modal');
 }
@@ -685,11 +809,14 @@ function toggleLiveLog() {
     return;
   }
   document.getElementById('live-status').innerHTML = '<span class="live-dot on" style="background:#f59e0b"></span> 连接中...';
-  document.getElementById('live-log-panel').innerHTML = '';
-  liveLogQueue = [];
-  liveLogSource = new EventSource('/api/log-stream');
+  var panel = document.getElementById('live-log-panel');
+  var afterId = parseInt(localStorage.getItem(LIVE_LOG_CURSOR_KEY) || '0', 10) || 0;
+  liveLogSource = new EventSource('/api/log-stream?after_id=' + afterId);
   liveLogSource.onmessage = function(e) {
     var log = JSON.parse(e.data);
+    if (log && log.id) {
+      localStorage.setItem(LIVE_LOG_CURSOR_KEY, String(log.id));
+    }
     liveLogQueue.push(log);
     if (liveLogQueue.length > 200) liveLogQueue.shift();
     var div = document.createElement('div');
@@ -700,8 +827,10 @@ function toggleLiveLog() {
       var time = (log.ts||'').slice(11,19);
       div.textContent = '['+formatShortTs(log.ts)+'] ['+(log.category||'')+'] '+log.message;
     }
-    var panel = document.getElementById('live-log-panel');
     panel.appendChild(div);
+    while (panel.childNodes.length > 300) {
+      panel.removeChild(panel.firstChild);
+    }
     panel.scrollTop = panel.scrollHeight;
   };
   liveLogSource.onopen = function() {
@@ -760,9 +889,17 @@ function toggleMultiModel() {
 
 function toggleSingleProviderFields() {
   var prov = document.getElementById('d-provider').value;
-  var showGlobalHint = prov === 'AI';
-  document.getElementById('d-provider-hint-group').style.display = showGlobalHint ? '' : 'none';
-  document.getElementById('d-tokens-group').style.display = showGlobalHint ? 'none' : '';
+  var showAiFields = prov === 'AI';
+  document.getElementById('d-provider-hint-group').style.display = showAiFields ? '' : 'none';
+  document.getElementById('d-tokens-group').style.display = showAiFields ? 'none' : '';
+}
+
+async function syncSingleAiFromGlobal() {
+  var settings = await GET('/api/settings');
+  var tc = settings.tiku_config || {};
+  document.getElementById('d-endpoint').value = tc.endpoint || '';
+  document.getElementById('d-key').value = tc.key || '';
+  document.getElementById('d-model').value = tc.model || '';
 }
 
 function toggleModelFields(idx) {

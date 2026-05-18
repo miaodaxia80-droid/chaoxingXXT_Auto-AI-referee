@@ -10,8 +10,12 @@ DEFAULT_SETTINGS = {
     "timezone": os.environ.get("APP_TIMEZONE", "Asia/Shanghai"),
     "max_concurrent_accounts": 2,
     "course_progress_workers": 3,
+    "ai_parallel_query_workers": 2,
+    "ai_parallel_only_large_sets": True,
+    "show_quiz_answer_detail": True,
     "show_system_metrics": True,
-    "dashboard_show_remark": False,
+    "auto_theme_follow_system": True,
+    "list_show_remark": False,
     "scheduler_paused": False,
     "run_window_enabled": False,
     "run_window_start": "08:00",
@@ -41,6 +45,8 @@ CREATE TABLE IF NOT EXISTS study_tasks (
   course_id TEXT,
   course_title TEXT,
   status TEXT DEFAULT 'pending',
+  chapter_ids TEXT DEFAULT '',
+  resume_from_task_id INTEGER,
   total_chapters INTEGER DEFAULT 0,
   dashboard_hidden INTEGER DEFAULT 0,
   queue_hidden INTEGER DEFAULT 0,
@@ -51,6 +57,7 @@ CREATE TABLE IF NOT EXISTS study_tasks (
 CREATE TABLE IF NOT EXISTS chapter_logs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   task_id INTEGER,
+  chapter_id TEXT DEFAULT '',
   chapter_title TEXT,
   result TEXT,
   message TEXT,
@@ -81,21 +88,24 @@ def init_db():
         conn.execute("PRAGMA journal_mode=WAL")
         conn.executescript(SCHEMA)
         _ensure_column(conn, "users", "user_agent", "TEXT DEFAULT ''")
+        _ensure_column(conn, "study_tasks", "chapter_ids", "TEXT DEFAULT ''")
+        _ensure_column(conn, "study_tasks", "resume_from_task_id", "INTEGER")
         _ensure_column(conn, "study_tasks", "total_chapters", "INTEGER DEFAULT 0")
         _ensure_column(conn, "study_tasks", "dashboard_hidden", "INTEGER DEFAULT 0")
         _ensure_column(conn, "study_tasks", "queue_hidden", "INTEGER DEFAULT 0")
+        _ensure_column(conn, "chapter_logs", "chapter_id", "TEXT DEFAULT ''")
         _ensure_column(conn, "chapter_logs", "cleared", "INTEGER DEFAULT 0")
         _ensure_column(conn, "chapter_logs", "dashboard_hidden", "INTEGER DEFAULT 0")
 
 
 def _normalize_setting_value(key, value):
-    if key in {"max_concurrent_accounts", "course_progress_workers"}:
+    if key in {"max_concurrent_accounts", "course_progress_workers", "ai_parallel_query_workers"}:
         try:
             value = int(value)
         except (TypeError, ValueError):
             value = DEFAULT_SETTINGS[key]
         return max(1, value)
-    if key in {"show_system_metrics", "dashboard_show_remark", "scheduler_paused", "run_window_enabled"}:
+    if key in {"show_system_metrics", "auto_theme_follow_system", "list_show_remark", "scheduler_paused", "run_window_enabled", "ai_parallel_only_large_sets", "show_quiz_answer_detail"}:
         if isinstance(value, str):
             return value.strip().lower() in {"1", "true", "yes", "on"}
         return bool(value)
@@ -182,12 +192,12 @@ def _parse(row):
     if row is None:
         return None
     d = dict(row)
-    for k in ('tiku_config', 'notification_config'):
+    for k in ('tiku_config', 'notification_config', 'chapter_ids'):
         if k in d and d[k]:
             try:
                 d[k] = json.loads(d[k])
             except Exception:
-                d[k] = {}
+                d[k] = {} if k in ('tiku_config', 'notification_config') else []
     return d
 
 def get_users():
@@ -225,11 +235,11 @@ def delete_user(uid):
     with get_conn() as conn:
         conn.execute("DELETE FROM users WHERE id=?", (uid,))
 
-def create_task(user_id, course_id, course_title):
+def create_task(user_id, course_id, course_title, chapter_ids=None, resume_from_task_id=None):
     with get_conn() as conn:
         cur = conn.execute(
-            "INSERT INTO study_tasks (user_id,course_id,course_title,status,total_chapters,started_at,finished_at) VALUES (?,?,?,'pending',0,NULL,NULL)",
-            (user_id, course_id, course_title)
+            "INSERT INTO study_tasks (user_id,course_id,course_title,status,chapter_ids,resume_from_task_id,total_chapters,started_at,finished_at) VALUES (?,?,?,'pending',?,?,0,NULL,NULL)",
+            (user_id, course_id, course_title, json.dumps(chapter_ids or []), resume_from_task_id)
         )
         return cur.lastrowid
 
@@ -260,30 +270,39 @@ def reconcile_incomplete_tasks():
         now = now_iso(conn)
         conn.execute(
             "UPDATE study_tasks SET status='stopped', finished_at=COALESCE(finished_at, ?) "
-            "WHERE status IN ('pending', 'running')",
+            "WHERE status='running'",
             (now,),
         )
 
 def get_tasks(limit=50):
     with get_conn() as conn:
         rows = conn.execute(
-            "SELECT t.*,u.username FROM study_tasks t "
+            "SELECT t.*,u.username,u.remark FROM study_tasks t "
             "LEFT JOIN users u ON t.user_id=u.id "
             "WHERE COALESCE(t.queue_hidden, 0)=0 "
             "ORDER BY t.id DESC LIMIT ?",
             (limit,)
         ).fetchall()
-        return [dict(r) for r in rows]
+        return [_parse(r) for r in rows]
+
+def get_pending_tasks():
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM study_tasks "
+            "WHERE status='pending' AND COALESCE(queue_hidden, 0)=0 "
+            "ORDER BY id ASC"
+        ).fetchall()
+        return [_parse(r) for r in rows]
 
 def get_task(task_id):
     with get_conn() as conn:
         return _parse(conn.execute("SELECT * FROM study_tasks WHERE id=?", (task_id,)).fetchone())
 
-def add_chapter_log(task_id, chapter_title, result, message=''):
+def add_chapter_log(task_id, chapter_id, chapter_title, result, message=''):
     with get_conn() as conn:
         conn.execute(
-            "INSERT INTO chapter_logs (task_id,chapter_title,result,message,cleared,dashboard_hidden,ts) VALUES (?,?,?,?,?,?,?)",
-            (task_id, chapter_title, result, message, 0, 0, now_iso(conn))
+            "INSERT INTO chapter_logs (task_id,chapter_id,chapter_title,result,message,cleared,dashboard_hidden,ts) VALUES (?,?,?,?,?,?,?,?)",
+            (task_id, chapter_id, chapter_title, result, message, 0, 0, now_iso(conn))
         )
 
 def get_chapter_logs(task_id, after_id=0):
@@ -323,6 +342,8 @@ def get_settings():
                 result[r['key']] = json.loads(r['value'])
             except Exception:
                 result[r['key']] = r['value']
+        if "list_show_remark" not in result and "dashboard_show_remark" in result:
+            result["list_show_remark"] = result["dashboard_show_remark"]
         for key, value in DEFAULT_SETTINGS.items():
             result.setdefault(key, value)
         for key in list(result):

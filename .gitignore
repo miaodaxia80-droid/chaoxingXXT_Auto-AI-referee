@@ -154,13 +154,3 @@ config*.ini
 .idea/
 .vscode/
 cache.json
-chaoxing_web.db
-chaoxing_web.db-journal
-chaoxing_web.db-wal
-chaoxing_web.db-shm
-celeryresults.sqlite3
-celeryresults.sqlite3-journal
-celeryresults.sqlite3-wal
-celeryresults.sqlite3-shm
-data/
-.claude/

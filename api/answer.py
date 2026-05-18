@@ -13,7 +13,7 @@ from typing import Optional
 
 import httpx
 import requests
-from openai import OpenAI
+from openai import OpenAI, OpenAIError
 from urllib3 import disable_warnings, exceptions
 
 from api.answer_check import *
@@ -221,7 +221,11 @@ class Tiku:
             logger.info(f"从缓存中获取答案：{q_info['title']} -> {answer}")
             return answer.strip()
         else:
-            answer = self._query(q_info, course_context=course_context)
+            try:
+                answer = self._query(q_info, course_context=course_context)
+            except Exception as exc:
+                logger.error(f"{self.name} 查询异常：{exc}")
+                return None
             if answer:
                 answer = answer.strip()
                 cache_dao.add_cache(q_info['title'], answer)
@@ -242,6 +246,12 @@ class Tiku:
         查询接口, 交由自定义题库实现
         """
         pass
+
+    def create_runtime_clone(self):
+        clone = self.__class__()
+        clone.config_set(dict(self._conf or {}))
+        clone.init_tiku()
+        return clone
 
 
     def get_tiku_from_config(self):
@@ -509,20 +519,17 @@ class AI(Tiku):
         super().__init__()
         self.name = 'AI大模型答题'
         self.last_request_time = None
+        self.client = None
 
     def _query(self, q_info: dict, course_context: str = None):
+        if self.DISABLE or not self.client:
+            return None
+
         def remove_md_json_wrapper(md_str):
             # 使用正则表达式匹配Markdown代码块并提取内容
             pattern = r'^\s*```(?:json)?\s*(.*?)\s*```\s*$'
             match = re.search(pattern, md_str, re.DOTALL)
             return match.group(1).strip() if match else md_str.strip()
-
-        if self.http_proxy:
-            proxy = self.http_proxy
-            httpx_client = httpx.Client(proxy=proxy)
-            client = OpenAI(http_client=httpx_client, base_url = self.endpoint,api_key = self.key)
-        else:
-            client = OpenAI(base_url = self.endpoint,api_key = self.key)
         # 去除选项字母，防止大模型直接输出字母而非内容
         options_list = q_info['options'].split('\n')
         cleaned_options = [re.sub(r"^[A-Z]\s*", "", option) for option in options_list]
@@ -550,90 +557,107 @@ class AI(Tiku):
 
         # 判断题目类型
         if q_info['type'] == "single":
-            completion = client.chat.completions.create(
-                model = self.model,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "本题为单选题，你只能选择一个选项，请根据题目和选项回答问题，以json格式输出正确的选项内容，示例回答：{\"Answer\": [\"答案\"]}。除此之外不要输出任何多余的内容，也不要使用MD语法。如果你使用了互联网搜索，也请不要返回搜索的结果和参考资料"
-                    },
-                    {
-                        "role": "user",
-                        "content": user_content
-                    }
-                ]
-            )
+            messages = [
+                {
+                    "role": "system",
+                    "content": "本题为单选题，你只能选择一个选项，请根据题目和选项回答问题，以json格式输出正确的选项内容，示例回答：{\"Answer\": [\"答案\"]}。除此之外不要输出任何多余的内容，也不要使用MD语法。如果你使用了互联网搜索，也请不要返回搜索的结果和参考资料"
+                },
+                {
+                    "role": "user",
+                    "content": user_content
+                }
+            ]
         elif q_info['type'] == 'multiple':
-            completion = client.chat.completions.create(
-                model = self.model,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "本题为多选题，你必须选择两个或以上选项，请根据题目和选项回答问题，以json格式输出正确的选项内容，示例回答：{\"Answer\": [\"答案1\",\n\"答案2\",\n\"答案3\"]}。除此之外不要输出任何多余的内容，也不要使用MD语法。如果你使用了互联网搜索，也请不要返回搜索的结果和参考资料"
-                    },
-                    {
-                        "role": "user",
-                        "content": user_content
-                    }
-                ]
-            )
+            messages = [
+                {
+                    "role": "system",
+                    "content": "本题为多选题，你必须选择两个或以上选项，请根据题目和选项回答问题，以json格式输出正确的选项内容，示例回答：{\"Answer\": [\"答案1\",\n\"答案2\",\n\"答案3\"]}。除此之外不要输出任何多余的内容，也不要使用MD语法。如果你使用了互联网搜索，也请不要返回搜索的结果和参考资料"
+                },
+                {
+                    "role": "user",
+                    "content": user_content
+                }
+            ]
         elif q_info['type'] == 'completion':
-            completion = client.chat.completions.create(
-                model = self.model,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "本题为填空题，你必须根据语境和相关知识填入合适的内容，请根据题目回答问题，以json格式输出正确的答案，示例回答：{\"Answer\": [\"答案\"]}。除此之外不要输出任何多余的内容，也不要使用MD语法。如果你使用了互联网搜索，也请不要返回搜索的结果和参考资料"
-                    },
-                    {
-                        "role": "user",
-                        "content": user_content
-                    }
-                ]
-            )
+            messages = [
+                {
+                    "role": "system",
+                    "content": "本题为填空题，你必须根据语境和相关知识填入合适的内容，请根据题目回答问题，以json格式输出正确的答案，示例回答：{\"Answer\": [\"答案\"]}。除此之外不要输出任何多余的内容，也不要使用MD语法。如果你使用了互联网搜索，也请不要返回搜索的结果和参考资料"
+                },
+                {
+                    "role": "user",
+                    "content": user_content
+                }
+            ]
         elif q_info['type'] == 'judgement':
-            completion = client.chat.completions.create(
-                model = self.model,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "本题为判断题，你只能回答正确或者错误，请根据题目回答问题，以json格式输出正确的答案，示例回答：{\"Answer\": [\"正确\"]}。除此之外不要输出任何多余的内容，也不要使用MD语法。如果你使用了互联网搜索，也请不要返回搜索的结果和参考资料"
-                    },
-                    {
-                        "role": "user",
-                        "content": user_content
-                    }
-                ]
-            )
+            messages = [
+                {
+                    "role": "system",
+                    "content": "本题为判断题，你只能回答正确或者错误，请根据题目回答问题，以json格式输出正确的答案，示例回答：{\"Answer\": [\"正确\"]}。除此之外不要输出任何多余的内容，也不要使用MD语法。如果你使用了互联网搜索，也请不要返回搜索的结果和参考资料"
+                },
+                {
+                    "role": "user",
+                    "content": user_content
+                }
+            ]
         else:
-            completion = client.chat.completions.create(
-                model = self.model,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "本题为简答题，你必须根据语境和相关知识填入合适的内容，请根据题目回答问题，以json格式输出正确的答案，示例回答：{\"Answer\": [\"这是我的答案\"]}。除此之外不要输出任何多余的内容，也不要使用MD语法。如果你使用了互联网搜索，也请不要返回搜索的结果和参考资料"
-                    },
-                    {
-                        "role": "user",
-                        "content": user_content
-                    }
-                ]
+            messages = [
+                {
+                    "role": "system",
+                    "content": "本题为简答题，你必须根据语境和相关知识填入合适的内容，请根据题目回答问题，以json格式输出正确的答案，示例回答：{\"Answer\": [\"这是我的答案\"]}。除此之外不要输出任何多余的内容，也不要使用MD语法。如果你使用了互联网搜索，也请不要返回搜索的结果和参考资料"
+                },
+                {
+                    "role": "user",
+                    "content": user_content
+                }
+            ]
+
+        try:
+            completion = self.client.chat.completions.create(
+                model=self.model,
+                messages=messages,
             )
+        except OpenAIError as exc:
+            logger.error(f"AI 大模型请求失败：{exc}")
+            return None
 
         try:
             response = json.loads(remove_md_json_wrapper(completion.choices[0].message.content))
             sep = "\n"
             return sep.join(response['Answer']).strip()
-        except:
-            logger.error("无法解析大模型输出内容")
+        except Exception as exc:
+            logger.error(f"无法解析大模型输出内容: {exc}")
             return None
 
     def _init_tiku(self):
-        self.endpoint = self._conf.get('endpoint', '')
-        self.key = self._conf.get('key', '')
-        self.model = self._conf.get('model', '')
-        self.http_proxy = self._conf.get('http_proxy', '')
+        self.endpoint = str(self._conf.get('endpoint', '') or '').strip()
+        self.key = str(self._conf.get('key', '') or '').strip()
+        self.model = str(self._conf.get('model', '') or '').strip()
+        self.http_proxy = str(self._conf.get('http_proxy', '') or '').strip()
         self.min_interval_seconds = int(self._conf.get('min_interval_seconds', 3))
+        self.client = None
+
+        missing = []
+        if not self.endpoint:
+            missing.append('endpoint')
+        if not self.key:
+            missing.append('key')
+        if not self.model:
+            missing.append('model')
+        if missing:
+            self.DISABLE = True
+            logger.error(f"AI 大模型配置不完整，缺少: {', '.join(missing)}，已禁用该题库")
+            return
+
+        try:
+            if self.http_proxy:
+                httpx_client = httpx.Client(proxy=self.http_proxy)
+                self.client = OpenAI(http_client=httpx_client, base_url=self.endpoint, api_key=self.key)
+            else:
+                self.client = OpenAI(base_url=self.endpoint, api_key=self.key)
+        except Exception as exc:
+            self.DISABLE = True
+            logger.error(f"AI 大模型客户端初始化失败，已禁用该题库: {exc}")
 class SiliconFlow(Tiku):
     """硅基流动大模型答题实现"""
     def __init__(self):
