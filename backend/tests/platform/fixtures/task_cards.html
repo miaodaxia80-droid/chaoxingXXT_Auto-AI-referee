@@ -1,0 +1,51 @@
+<!doctype html>
+<html><body><script>
+var mArg = {
+  "defaults": {
+    "ktoken": "ktoken-fixture",
+    "mtEnc": "mt-fixture",
+    "reportTimeInterval": 45,
+    "cardid": "card-1",
+    "cpi": "cpi-100",
+    "knowledgeid": "chapter-1"
+  },
+  "attachments": [
+    {
+      "job": true,
+      "type": "video",
+      "jobid": "video-job",
+      "objectId": "video-object",
+      "mid": "video-mid",
+      "otherInfo": "nodeId_42-rt_d&courseId=ignored",
+      "playTime": 15000,
+      "property": {"name": "Fixture video", "rt": ""},
+      "attDuration": "12",
+      "attDurationEnc": "att-enc",
+      "videoFaceCaptureEnc": "face-enc"
+    },
+    {
+      "job": true,
+      "type": "document",
+      "jobid": "document-job",
+      "jtoken": "document-token",
+      "otherInfo": "nodeId_42-document",
+      "property": {"objectid": "document-object"}
+    },
+    {
+      "job": true,
+      "type": "workid",
+      "jobid": "work-quiz-job",
+      "otherInfo": "quiz-info"
+    },
+    {
+      "job": null,
+      "type": "read",
+      "jobid": "read-job",
+      "otherInfo": "read-info",
+      "property": {"read": false, "id": "read-item", "title": "Fixture reading"}
+    },
+    {"job": true, "type": "live", "jobid": "live-job"},
+    {"job": true, "type": "video", "jobid": "completed", "isPassed": true}
+  ]
+};
+</script></body></html>

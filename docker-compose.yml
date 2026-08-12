@@ -1,14 +1,17 @@
-version: "3.8"
-
 services:
   chaoxing:
     build:
       context: .
-      dockerfile: Dockerfile.web
-    image: chaoxing-web:latest
-    container_name: chaoxing-web
+    image: chaoxing-console:latest
+    container_name: chaoxing-console
     ports:
-      - "5002:5002"
+      - "127.0.0.1:5002:5002"
     volumes:
-      - ./data:/app/data
+      - ./chaoxing-data:/app/data
     restart: unless-stopped
+    stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5002/api/v1/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

@@ -1,0 +1,9 @@
+{
+  "extends": "@tsconfig/node22/tsconfig.json",
+  "include": ["vite.config.ts"],
+  "compilerOptions": {
+    "composite": true,
+    "tsBuildInfoFile": "../.frontend-cache/tsconfig.node.tsbuildinfo",
+    "types": ["node"]
+  }
+}

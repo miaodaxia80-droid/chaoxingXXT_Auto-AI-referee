@@ -103,6 +103,9 @@ celerybeat.pid
 
 # Environments
 .env
+.env.*
+!.env.example
+!.env.*.example
 .venv
 env/
 venv/
@@ -135,7 +138,8 @@ dist/
 
 # python-uv.lock
 # just like Pipfile.lock,
-uv.lock
+/uv.lock
+!backend/uv.lock
 
 # poetry
 poetry.lock
@@ -154,3 +158,56 @@ config*.ini
 .idea/
 .vscode/
 cache.json
+
+# Rewrite runtime data and local secrets
+data/
+chaoxing-data/
+/backups/
+*.cxbackup
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+master.key
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cer
+*.jks
+backend/.env
+backend/.venv/
+frontend/node_modules/
+frontend/dist/
+frontend/*.tsbuildinfo
+frontend/vite.config.js
+frontend/vite.config.d.ts
+frontend/.playwright-results/
+frontend/playwright-report/
+.frontend-dist/
+.frontend-cache/
+
+# Local rewrite verification artifacts
+.qa-*/
+.qa-*.png
+.browser-data*/
+.codex-build-probe/
+.vite-browser-cache/
+.browser-*.log
+.qa-*.log
+frontend/vite.browser.config.ts
+.alembic-*/
+.frontend-dist-*/
+.mypy-cache-*/
+.playwright-results-*/
+.ruff-cache-*/
+.schema-gate-*/
+.pnpm-store/
+
+# Operating-system metadata
+.DS_Store
+Thumbs.db
+Desktop.ini

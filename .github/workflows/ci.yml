@@ -1,0 +1,123 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: Backend (${{ matrix.os }}, Python ${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.12", "3.13"]
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.8.13"
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+      - name: Install backend dependencies
+        run: uv sync --locked --all-extras --python ${{ matrix.python }}
+      - name: Run tests
+        run: uv run --locked python -m pytest -q
+      - name: Run Ruff
+        run: uv run --locked python -m ruff check .
+      - name: Run mypy
+        run: uv run --locked python -m mypy
+      - name: Verify migrations from an empty database
+        env:
+          CX_DATABASE_URL: sqlite:///ci-migrations.db
+        run: |
+          uv run --locked python -m alembic upgrade head
+          uv run --locked python -m alembic check
+          uv run --locked python -m alembic downgrade base
+
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.16.0
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Type-check frontend
+        run: pnpm typecheck
+      - name: Lint frontend
+        run: pnpm lint
+      - name: Build frontend
+        run: pnpm build
+      - name: Install Playwright Chromium
+        run: pnpm exec playwright install --with-deps chromium
+      - name: Run browser end-to-end tests
+        run: pnpm e2e
+
+  container:
+    name: Container (${{ matrix.platform }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            tag: amd64
+          - platform: linux/arm64
+            tag: arm64
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          platforms: ${{ matrix.platform }}
+          tags: chaoxing-console:ci-${{ matrix.tag }}
+          outputs: type=docker,dest=/tmp/chaoxing-${{ matrix.tag }}.tar
+          cache-from: type=gha,scope=${{ matrix.tag }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.tag }}
+      - name: Load image
+        run: docker load --input /tmp/chaoxing-${{ matrix.tag }}.tar
+      - name: Verify CLI and migrations inside image
+        run: |
+          docker run --rm --platform "${{ matrix.platform }}" chaoxing-console:ci-${{ matrix.tag }} chaoxing-app --help
+          docker run --rm --platform "${{ matrix.platform }}" chaoxing-console:ci-${{ matrix.tag }} python -c "import cv2, ddddocr, onnxruntime"
+          docker run --rm --platform "${{ matrix.platform }}" -e CX_DATABASE_URL=sqlite:////tmp/migration.db chaoxing-console:ci-${{ matrix.tag }} python -m alembic upgrade head
+      - name: Start image and verify health
+        run: |
+          docker run -d --name chaoxing-ci --platform "${{ matrix.platform }}" -p 5002:5002 chaoxing-console:ci-${{ matrix.tag }}
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent --show-error http://127.0.0.1:5002/api/v1/health; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs chaoxing-ci
+          exit 1
+      - name: Show container logs
+        if: always()
+        run: docker logs chaoxing-ci 2>&1 || true
