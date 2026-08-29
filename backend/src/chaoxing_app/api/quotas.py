@@ -11,7 +11,7 @@ ACTIVE_TASK_STATUSES = [
     task_status.value for task_status in TaskStatus if task_status not in TERMINAL_TASK_STATUSES
 ]
 
-DEFAULT_MAX_ACCOUNTS = 3
+DEFAULT_MAX_ACCOUNTS = 1
 DEFAULT_MAX_ACTIVE_TASKS = 1
 
 

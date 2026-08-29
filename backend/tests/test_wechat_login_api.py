@@ -102,7 +102,7 @@ def test_wx_login_creates_user_and_issues_session() -> None:
             assert response.status_code == 200
             body = response.json()
             assert body["user"]["nickname"] == "Alice"
-            assert body["user"]["quotas"] == {"max_accounts": 3, "max_active_tasks": 1}
+            assert body["user"]["quotas"] == {"max_accounts": 1, "max_active_tasks": 1}
             assert body["csrf_token"]
             assert client.cookies.get("cx_session")
 
