@@ -1,0 +1,34 @@
+# 阿里云小内存机器专用：
+# 1. 跳过前端构建（用本机预构建的 .frontend-dist），避免 node 压垮 1.6G 内存
+# 2. 超星对云机房 IP 有 403 风控（302 → passport403.html），故采用
+#    network_mode: host 直接复用宿主机上的 xray 出口代理（127.0.0.1:10808/10809）
+# 启动：docker compose -f docker-compose.server.yml up -d --build
+services:
+  chaoxing:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    image: chaoxing-console:server
+    container_name: chaoxing-console
+    network_mode: host
+    volumes:
+      - ./chaoxing-data:/app/data
+    environment:
+      CX_ALLOWED_ORIGINS: '["https://cx.kevinxu.cn"]'
+      CX_WORKER_MAX_WORKERS: "2"
+      # requests/urllib 自动读取这三个变量：
+      # 超星对云机房 IP 有 403 风控，故出站统一走内网 Library(192.168.31.126) 的
+      # tinyproxy（仅允许 Tailnet 网段访问），出口为其家宽住宅 IP。
+      # 备选方案：若 Library 关机，可把下面两行改回 http://127.0.0.1:10809 用本机 xray。
+      HTTP_PROXY: "http://100.86.39.3:10811"
+      HTTPS_PROXY: "http://100.86.39.3:10811"
+      NO_PROXY: "127.0.0.1,localhost"
+    # host 网络下务必只绑回环，避免 5002 绕过 Caddy 暴露公网
+    command: ["sh", "-c", "python -m alembic upgrade head && exec chaoxing-app serve --host 127.0.0.1 --port 5002"]
+    restart: unless-stopped
+    stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5002/api/v1/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

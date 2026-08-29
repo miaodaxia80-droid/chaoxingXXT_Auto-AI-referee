@@ -1,0 +1,44 @@
+# 轻量服务器部署镜像：复用本机预构建的 .frontend-dist，
+# 避免在 1.6GB 内存的小机器上跑 node/pnpm 构建（曾把整机压到 swap 抖死）。
+# 用法：docker compose -f docker-compose.server.yml up -d --build
+FROM python:3.13-slim
+
+COPY --from=ghcr.io/astral-sh/uv:0.8.13 /uv /uvx /bin/
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libgomp1 \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    UV_PROJECT_ENVIRONMENT=/opt/chaoxing \
+    CX_ENVIRONMENT=production \
+    CX_DATA_DIR=/app/data \
+    CX_DATABASE_URL=sqlite:////app/data/chaoxing.db \
+    CX_FRONTEND_DIR=/app/frontend \
+    PATH="/opt/chaoxing/bin:$PATH"
+
+WORKDIR /app
+
+# 上游缺陷补丁：infrastructure/wechat.py 在 import 期无条件引用 httpx，
+# 但上游只把它放在 dev 可选依赖组（生产镜像同样会崩）。提升为正式依赖；
+# 因 uv.lock 未包含该变更，需去掉 --locked。
+COPY backend/pyproject.toml backend/uv.lock /build/backend/
+COPY backend/src /build/backend/src
+RUN cd /build/backend \
+    && sed -i 's|^  "fastapi>=0.116,<1",|  "fastapi>=0.116,<1",\n  "httpx>=0.28,<1",|' pyproject.toml \
+    && grep -q '"httpx' pyproject.toml \
+    && uv sync --no-dev --no-editable
+
+COPY backend/alembic.ini /app/alembic.ini
+COPY backend/alembic /app/alembic
+
+COPY .frontend-dist /app/frontend
+
+VOLUME /app/data
+EXPOSE 5002
+
+CMD ["sh", "-c", "python -m alembic upgrade head && exec chaoxing-app serve --host 0.0.0.0 --port 5002"]
