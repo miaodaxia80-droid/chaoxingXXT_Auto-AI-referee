@@ -41,8 +41,8 @@ def new_public_id() -> str:
 
 
 def default_user_quotas() -> dict[str, int]:
-    """Platform defaults for a WeChat mini-program tenant."""
-    return {"max_accounts": 3, "max_active_tasks": 1}
+    """Platform defaults for a tenant: one bound Chaoxing account, one active task."""
+    return {"max_accounts": 1, "max_active_tasks": 1}
 
 
 class TimestampMixin:

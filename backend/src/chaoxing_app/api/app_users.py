@@ -28,6 +28,7 @@ from chaoxing_app.infrastructure.db.models import (
     AdminUser,
     AppUser,
     StudyTask,
+    default_user_quotas,
     ensure_utc,
     utc_now,
 )
@@ -137,7 +138,7 @@ def create_app_user(
         username=username,
         password_hash=password_service.hash(payload.password),
         nickname=payload.nickname.strip() or username,
-        quotas={**{"max_accounts": 3, "max_active_tasks": 1}, **(payload.quotas or {})},
+        quotas={**default_user_quotas(), **(payload.quotas or {})},
     )
     db.add(user)
     db.flush()
