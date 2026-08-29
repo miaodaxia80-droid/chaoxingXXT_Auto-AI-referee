@@ -103,7 +103,10 @@ def run(argv: Sequence[str] | None = None) -> int:
             host=args.host,
             port=args.port,
             reload=args.reload,
-            proxy_headers=False,
+            # Service binds loopback only: the peer is always Caddy/cloudflared
+            # (127.0.0.1). Trust its X-Forwarded-For to restore the real client
+            # IP (the rate limiters key on it).
+            proxy_headers=True,
         )
         return 0
 

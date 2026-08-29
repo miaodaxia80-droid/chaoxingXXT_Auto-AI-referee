@@ -57,7 +57,7 @@ def test_parser_exposes_backup_and_restore_contracts_with_security_warnings(
     assert "plaintext credentials" in import_help
 
 
-def test_serve_dispatch_disables_proxy_header_trust(
+def test_serve_dispatch_trusted_proxy_headers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[dict[str, Any]] = []
@@ -74,7 +74,9 @@ def test_serve_dispatch_disables_proxy_header_trust(
             "host": "0.0.0.0",
             "port": 6000,
             "reload": True,
-            "proxy_headers": False,
+            # loopback-only bind: the peer is Caddy/cloudflared, whose
+            # X-Forwarded-For must be trusted for client-IP-based rate limits
+            "proxy_headers": True,
         }
     ]
 

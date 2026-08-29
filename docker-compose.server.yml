@@ -14,7 +14,8 @@ services:
     volumes:
       - ./chaoxing-data:/app/data
     environment:
-      CX_ALLOWED_ORIGINS: '["https://cx.kevinxu.cn"]'
+      # 过渡期双域名并行（iOS 旧版仍走 kevinxu.cn），稳定后退役旧域名
+      CX_ALLOWED_ORIGINS: '["https://cx.miao.best", "https://cx.kevinxu.cn"]'
       CX_WORKER_MAX_WORKERS: "2"
       # requests/urllib 自动读取这三个变量：
       # 超星对云机房 IP 有 403 风控，故出站统一走内网 Library(192.168.31.126) 的
