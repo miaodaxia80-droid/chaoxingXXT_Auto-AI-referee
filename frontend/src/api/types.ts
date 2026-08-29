@@ -8,9 +8,95 @@ export interface AuthResponse {
   expires_at: string
 }
 
-export interface CurrentUser {
+export type SessionKind = 'admin' | 'app_user'
+
+export interface AppUserProfile {
+  id: number
+  nickname: string
+  avatar_url: string
+  quotas: Record<string, number>
+  username: string | null
+  plan_expires_at: string | null
+  task_credits: number
+}
+
+export interface AppUserAdmin extends AppUserProfile {
+  openid: string
+  has_password: boolean
+  disabled: boolean
+  account_count: number
+  active_task_count: number
+  created_at: string
+  updated_at: string
+}
+
+export interface CreateAppUserInput {
   username: string
+  password: string
+  nickname?: string
+  quotas?: Record<string, number>
+}
+
+export interface UpdateAppUserInput {
+  disabled?: boolean
+  nickname?: string
+  quotas?: Record<string, number>
+  password?: string
+  plan_extend_days?: number
+  task_credits_add?: number
+}
+
+export interface CurrentUser {
+  username: string | null
   csrf_token: string
+  kind: SessionKind
+  user: AppUserProfile | null
+}
+
+export type CardKeyKind = 'time' | 'count'
+export type CardKeyStatus = 'unused' | 'used' | 'revoked'
+
+export interface CardKey {
+  id: number
+  code_hint: string
+  kind: CardKeyKind
+  value: number
+  batch: string
+  status: CardKeyStatus
+  used_by: number | null
+  used_at: string | null
+  created_at: string
+}
+
+export interface CardKeyIssueItem {
+  code: string
+  kind: CardKeyKind
+  value: number
+}
+
+export interface CardKeyGenerateResponse {
+  created: number
+  items: CardKeyIssueItem[]
+}
+
+export interface CreateCardKeysInput {
+  kind: CardKeyKind
+  value: number
+  count: number
+  batch?: string
+}
+
+export interface CardKeyRedeemResponse {
+  kind: CardKeyKind
+  value: number
+  plan_expires_at: string | null
+  task_credits: number
+}
+
+export interface EntitlementResponse {
+  plan_expires_at: string | null
+  task_credits: number
+  active: boolean
 }
 
 export interface HealthResponse {

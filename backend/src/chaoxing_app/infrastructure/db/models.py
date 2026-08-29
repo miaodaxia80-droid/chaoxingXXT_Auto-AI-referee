@@ -28,6 +28,14 @@ def utc_now() -> datetime:
     return datetime.now(UTC)
 
 
+def ensure_utc(value: datetime | None) -> datetime | None:
+    """SQLite drops timezones: treat naive values read back as UTC so they can
+    be compared with timezone-aware datetimes."""
+    if value is None or value.tzinfo is not None:
+        return value
+    return value.replace(tzinfo=UTC)
+
+
 def new_public_id() -> str:
     return str(uuid.uuid4())
 
@@ -62,12 +70,16 @@ class AdminUser(TimestampMixin, Base):
 
 
 class AppUser(TimestampMixin, Base):
-    """A WeChat mini-program tenant, identified by its WeChat openid."""
+    """A tenant: WeChat mini-program (openid) or local account (username+password)."""
 
     __tablename__ = "app_users"
 
     id: Mapped[int] = mapped_column(primary_key=True)
     openid: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    # Local username/password login; NULL for WeChat-only users. Their openid
+    # column holds a "local:<uuid>" placeholder to keep the unique constraint.
+    username: Mapped[str | None] = mapped_column(String(80), unique=True, nullable=True)
+    password_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
     nickname: Mapped[str] = mapped_column(String(120), default="", nullable=False)
     avatar_url: Mapped[str] = mapped_column(Text, default="", nullable=False)
     disabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
@@ -75,11 +87,42 @@ class AppUser(TimestampMixin, Base):
         JSON, default=default_user_quotas, nullable=False
     )
     session_version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    # Entitlements: time-card expiry (tz-aware) and remaining count-card credits.
+    # While the plan is active, credits are not consumed.
+    plan_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    task_credits: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
     sessions: Mapped[list[WebSession]] = relationship(
         back_populates="app_user", cascade="all, delete-orphan"
     )
     accounts: Mapped[list[Account]] = relationship(back_populates="user")
+    redeemed_cards: Mapped[list[CardKey]] = relationship(back_populates="redeemed_by_user")
+
+
+class CardKey(TimestampMixin, Base):
+    """One-time redeemable card key; only the SHA-256 digest is persisted (the
+    plaintext code is returned exactly once, in the generate response)."""
+
+    __tablename__ = "card_keys"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    code_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    # Display-only tail (e.g. ****-XQ8P); listing never returns the plaintext.
+    code_hint: Mapped[str] = mapped_column(String(32), default="", nullable=False)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)  # "time" | "count"
+    value: Mapped[int] = mapped_column(Integer, nullable=False)  # days or credits
+    batch: Mapped[str] = mapped_column(String(120), default="", nullable=False)
+    # unused | used | revoked
+    status: Mapped[str] = mapped_column(String(16), default="unused", nullable=False)
+    used_by: Mapped[int | None] = mapped_column(
+        ForeignKey("app_users.id", name="fk_card_keys_used_by_app_users"), nullable=True
+    )
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_by: Mapped[str] = mapped_column(String(80), default="", nullable=False)
+
+    redeemed_by_user: Mapped[AppUser | None] = relationship(back_populates="redeemed_cards")
 
 
 class WebSession(Base):
