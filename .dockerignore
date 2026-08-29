@@ -71,3 +71,6 @@ __pycache__
 .DS_Store
 Thumbs.db
 Desktop.ini
+
+# 放行本机预构建的前端产物（Dockerfile.server 使用）
+!.frontend-dist
