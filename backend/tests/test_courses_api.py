@@ -11,6 +11,7 @@ from chaoxing_app.application.course_discovery import (
     AccountDisabledError,
     AccountNotFoundError,
 )
+from chaoxing_app.infrastructure.db.models import Account
 from chaoxing_app.main import create_app
 from chaoxing_app.platform.errors import (
     PlatformAuthenticationError,
@@ -48,6 +49,17 @@ def bootstrap_and_login(client: TestClient) -> str:
     )
     assert login.status_code == 200
     return login.json()["csrf_token"]
+
+
+def seed_account(app: FastAPI, account_id: int) -> None:
+    with app.state.session_factory.begin() as session:
+        session.add(
+            Account(
+                id=account_id,
+                username_hint=f"u{account_id}",
+                username_fingerprint=f"fp-{account_id}",
+            )
+        )
 
 
 class StubCourseService:
@@ -100,6 +112,7 @@ def test_course_discovery_requires_authentication_and_csrf() -> None:
                 == 403
             )
 
+            seed_account(app, 7)
             assert (
                 client.post(
                     discover_url,
@@ -136,6 +149,7 @@ def test_course_discovery_returns_public_course_fields() -> None:
         with client:
             csrf_token = bootstrap_and_login(client)
             app.state.course_discovery_service = service
+            seed_account(app, 42)
 
             response = client.post(
                 "/api/v1/accounts/42/courses/discover",
@@ -191,6 +205,7 @@ def test_chapter_discovery_builds_course_and_returns_positions() -> None:
         with client:
             csrf_token = bootstrap_and_login(client)
             app.state.course_discovery_service = service
+            seed_account(app, 24)
 
             response = client.post(
                 "/api/v1/accounts/24/courses/course-100/chapters",
@@ -275,6 +290,7 @@ def test_course_api_maps_runtime_and_platform_errors() -> None:
         app, client = make_client(temp_dir)
         with client:
             csrf_token = bootstrap_and_login(client)
+            seed_account(app, 5)
             for error, expected_status, expected_detail in cases:
                 app.state.course_discovery_service = StubCourseService(error=error)
 

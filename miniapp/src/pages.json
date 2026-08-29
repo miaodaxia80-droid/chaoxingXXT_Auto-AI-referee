@@ -1,0 +1,78 @@
+{
+  "pages": [
+    {
+      "path": "pages/home/home",
+      "style": {
+        "navigationBarTitleText": "学习助手",
+        "enablePullDownRefresh": true
+      }
+    },
+    {
+      "path": "pages/accounts/accounts",
+      "style": {
+        "navigationBarTitleText": "账号",
+        "enablePullDownRefresh": true
+      }
+    },
+    {
+      "path": "pages/study/study",
+      "style": {
+        "navigationBarTitleText": "学习",
+        "enablePullDownRefresh": true
+      }
+    },
+    {
+      "path": "pages/activity/activity",
+      "style": {
+        "navigationBarTitleText": "动态",
+        "enablePullDownRefresh": true
+      }
+    },
+    {
+      "path": "pages/me/me",
+      "style": {
+        "navigationBarTitleText": "我的"
+      }
+    },
+    {
+      "path": "pages/task-detail/task-detail",
+      "style": {
+        "navigationBarTitleText": "任务详情"
+      }
+    }
+  ],
+  "tabBar": {
+    "color": "@tabFontColor",
+    "selectedColor": "@tabSelectedColor",
+    "backgroundColor": "@tabBgColor",
+    "borderStyle": "@tabBorderStyle",
+    "list": [
+      {
+        "pagePath": "pages/home/home",
+        "text": "首页"
+      },
+      {
+        "pagePath": "pages/accounts/accounts",
+        "text": "账号"
+      },
+      {
+        "pagePath": "pages/study/study",
+        "text": "学习"
+      },
+      {
+        "pagePath": "pages/activity/activity",
+        "text": "动态"
+      },
+      {
+        "pagePath": "pages/me/me",
+        "text": "我的"
+      }
+    ]
+  },
+  "globalStyle": {
+    "navigationBarTextStyle": "@navTxtStyle",
+    "navigationBarTitleText": "学习助手",
+    "navigationBarBackgroundColor": "@navBgColor",
+    "backgroundColor": "@bgColor"
+  }
+}

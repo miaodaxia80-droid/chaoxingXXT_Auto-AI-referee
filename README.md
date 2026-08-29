@@ -222,8 +222,14 @@ Alembic 本身不会通过 Pydantic 自动读取 `.env`，因此生产迁移必�
 | `CX_ALLOWED_ORIGINS` | `[]` | 允许的公开 Origin JSON 数组 |
 | `CX_WORKER_MAX_WORKERS` | `2` | 同时活跃的账号 worker 上限 |
 | `CX_SESSION_TTL_SECONDS` | `86400` | 管理员会话有效期 |
+| `CX_WECHAT_APPID` | 空 | 微信小程序 appid；未配置时 `/auth/wx/login` 返回 503 |
+| `CX_WECHAT_SECRET` | 空 | 微信小程序 secret，仅服务端用于 code2session |
 
 worker 心跳、租约、恢复和登录限流等配置定义在 [settings.py](backend/src/chaoxing_app/settings.py)。
+
+### 小程序多租户（app users）
+
+除单一管理员外，应用还支持微信小程序租户：`POST /api/v1/auth/wx/login` 以 `wx.login` 的 code 换会话，openid 即租户标识。租户数据经 `accounts.user_id` 全链路隔离（账号、任务、事件、人工接管均按归属过滤），并受每用户配额约束（默认 3 个学习账号、1 个并发任务，管理员可通过 `GET/PATCH /api/v1/app-users` 调整）。管理端（Vue 控制台）使用管理员会话，不受归属过滤影响。
 
 ## 数据与安全
 

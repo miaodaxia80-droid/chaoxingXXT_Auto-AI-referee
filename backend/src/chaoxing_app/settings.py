@@ -79,6 +79,9 @@ class AppSettings(BaseSettings):
         ge=0,
         allow_inf_nan=False,
     )
+    wechat_appid: str = ""
+    wechat_secret: str = ""
+    dev_login_enabled: bool = False
 
     @field_validator("allowed_origins")
     @classmethod

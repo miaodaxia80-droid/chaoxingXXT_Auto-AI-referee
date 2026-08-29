@@ -1,0 +1,183 @@
+/* 全局基础样式（配合 uni.scss 内置变量） */
+page {
+  /* 主题变量（浅色）；暗色由下方 prefers-color-scheme 覆盖 */
+  --bg-page: #f5f6f8;
+  --bg-card: #ffffff;
+  --bg-soft: #f8f9fb;
+  --text-primary: #1f2329;
+  --text-muted: #8a919f;
+  --primary: #2b6de8;
+  --primary-disabled: #a8c1ef;
+  --danger: #e54d42;
+  --success: #2ea257;
+  --warning: #d98a00;
+  --gray-3: #c9cdd4;
+  --border: #f0f1f3;
+  --border-input: #e5e7eb;
+  --track: #eef0f3;
+  --badge-blue-bg: #eef3ff;
+  --badge-green-bg: #e8f7ee;
+  --badge-yellow-bg: #fff7e6;
+  --badge-red-bg: #fdecea;
+
+  background-color: var(--bg-page);
+  color: var(--text-primary);
+  font-size: 28rpx;
+  line-height: 1.6;
+}
+
+@media (prefers-color-scheme: dark) {
+  page {
+    --bg-page: #121417;
+    --bg-card: #1e2126;
+    --bg-soft: #262a30;
+    --text-primary: #e8eaed;
+    --text-muted: #9aa1ab;
+    --primary: #4d84f0;
+    --primary-disabled: #3a4d6e;
+    --danger: #f0685e;
+    --success: #4cb875;
+    --warning: #e8a329;
+    --gray-3: #4a5058;
+    --border: #2e3238;
+    --border-input: #3a3f46;
+    --track: #2e3238;
+    --badge-blue-bg: #2a3550;
+    --badge-green-bg: #1f3d2e;
+    --badge-yellow-bg: #3d3319;
+    --badge-red-bg: #47242a;
+  }
+}
+
+.card {
+  background: var(--bg-card);
+  border-radius: 16rpx;
+  padding: 24rpx;
+  margin: 20rpx 24rpx;
+  box-shadow: 0 2rpx 12rpx rgba(0, 0, 0, 0.06);
+}
+
+.section-title {
+  font-size: 26rpx;
+  color: #8a919f;
+  margin: 32rpx 24rpx 12rpx;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.text-muted {
+  color: var(--text-muted);
+  font-size: 24rpx;
+}
+
+.text-danger {
+  color: var(--danger);
+}
+
+.btn-primary {
+  background: var(--primary);
+  color: #ffffff;
+  border-radius: 12rpx;
+  font-size: 30rpx;
+
+  &[disabled] {
+    background: var(--primary-disabled);
+    color: #ffffff;
+  }
+}
+
+.btn-plain {
+  background: transparent;
+  color: var(--primary);
+  border: 1rpx solid var(--primary);
+  border-radius: 12rpx;
+  font-size: 28rpx;
+
+  &[disabled] {
+    color: var(--primary-disabled);
+    border-color: var(--primary-disabled);
+  }
+}
+
+.empty {
+  padding: 120rpx 0;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 26rpx;
+}
+
+/* 任务状态徽标 */
+.badge {
+  display: inline-block;
+  padding: 4rpx 16rpx;
+  border-radius: 8rpx;
+  font-size: 22rpx;
+
+  &.queued,
+  &.recovering {
+    background: var(--badge-blue-bg);
+    color: var(--primary);
+  }
+  &.running,
+  &.pause_requested,
+  &.cancel_requested {
+    background: var(--badge-green-bg);
+    color: var(--success);
+  }
+  &.paused {
+    background: var(--badge-yellow-bg);
+    color: var(--warning);
+  }
+  &.succeeded {
+    background: var(--badge-green-bg);
+    color: var(--success);
+  }
+  &.failed,
+  &.needs_attention {
+    background: var(--badge-red-bg);
+    color: var(--danger);
+  }
+  &.canceled {
+    background: var(--border);
+    color: var(--text-muted);
+  }
+}
+
+/* #ifdef H5 */
+/* uni H5 的样式重置会清掉原生 button/input 的默认高度，这里补回，
+   保证 H5 构建下按钮与输入框可点击、可见。 */
+uni-input {
+  display: block;
+}
+uni-input .uni-input-input {
+  height: auto;
+  min-height: 44rpx;
+}
+uni-textarea .uni-textarea-textarea {
+  height: auto;
+  min-height: 60rpx;
+}
+uni-button {
+  display: inline-block;
+  margin: 0;
+}
+uni-button::after {
+  border: none;
+}
+button {
+  height: auto;
+  min-height: 72rpx;
+  padding: 12rpx 32rpx;
+  line-height: 1.5;
+  box-sizing: border-box;
+}
+button[size='mini'] {
+  min-height: 52rpx;
+  padding: 6rpx 20rpx;
+  font-size: 22rpx;
+}
+/* #endif */

@@ -18,6 +18,8 @@ from chaoxing_app.api.dependencies import (
     require_csrf,
 )
 from chaoxing_app.api.event_schemas import EventResponse, to_event_responses
+from chaoxing_app.api.ownership import owned_account_or_404, owned_task_or_404, scoped_user_id
+from chaoxing_app.api.quotas import ensure_task_quota
 from chaoxing_app.api.task_schemas import (
     BulkStudyTaskCreateRequest,
     BulkTaskActionItemResult,
@@ -132,12 +134,13 @@ def _create_task(
     payload: StudyTaskCreateRequest,
     db: Session,
     secret_box: SecretBox,
+    context: AuthContext,
 ) -> StudyTask:
-    account = db.get(Account, payload.account_id)
-    if account is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="account not found")
+    account = owned_account_or_404(db, payload.account_id, context)
     if not account.enabled:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="account is disabled")
+    if context.kind == "app_user":
+        ensure_task_quota(db, context.app_user)
 
     repository = StudyTaskRepository()
     try:
@@ -207,11 +210,11 @@ def _create_task(
 @router.post("", response_model=StudyTaskDetailResponse, status_code=status.HTTP_201_CREATED)
 def create_task(
     payload: StudyTaskCreateRequest,
-    _context: AuthContext = Depends(require_csrf),
+    context: AuthContext = Depends(require_csrf),
     db: Session = Depends(get_db),
     secret_box: SecretBox = Depends(get_secret_box),
 ) -> StudyTaskDetailResponse:
-    return to_task_detail_response(_create_task(payload, db, secret_box))
+    return to_task_detail_response(_create_task(payload, db, secret_box, context))
 
 
 def _create_error_code(exc: HTTPException) -> str:
@@ -221,13 +224,15 @@ def _create_error_code(exc: HTTPException) -> str:
         return "invalid_integration"
     if exc.detail == "account is disabled":
         return "account_disabled"
+    if exc.detail == "task quota exceeded":
+        return "task_quota_exceeded"
     return "duplicate_active_task"
 
 
 @router.post("/bulk-create", response_model=BulkTaskCreateResponse)
 def bulk_create_tasks(
     payload: BulkStudyTaskCreateRequest,
-    _context: AuthContext = Depends(require_csrf),
+    context: AuthContext = Depends(require_csrf),
     db: Session = Depends(get_db),
     secret_box: SecretBox = Depends(get_secret_box),
 ) -> BulkTaskCreateResponse:
@@ -235,7 +240,7 @@ def bulk_create_tasks(
     for item in payload.tasks:
         try:
             with db.begin_nested():
-                task = _create_task(item, db, secret_box)
+                task = _create_task(item, db, secret_box, context)
         except HTTPException as exc:
             results.append(
                 BulkTaskCreateItemResult(
@@ -266,7 +271,7 @@ def bulk_create_tasks(
 
 @router.get("", response_model=list[StudyTaskResponse])
 def list_tasks(
-    _context: AuthContext = Depends(require_auth),
+    context: AuthContext = Depends(require_auth),
     db: Session = Depends(get_db),
     account_id: int | None = Query(default=None, gt=0),
     task_status: TaskStatus | None = Query(default=None, alias="status"),
@@ -276,6 +281,7 @@ def list_tasks(
     tasks = StudyTaskRepository().list(
         db,
         account_id=account_id,
+        user_id=scoped_user_id(context),
         status=task_status,
         limit=limit,
         offset=offset,
@@ -286,9 +292,10 @@ def list_tasks(
 @router.get("/{task_id}", response_model=StudyTaskDetailResponse)
 def get_task(
     task_id: str,
-    _context: AuthContext = Depends(require_auth),
+    context: AuthContext = Depends(require_auth),
     db: Session = Depends(get_db),
 ) -> StudyTaskDetailResponse:
+    owned_task_or_404(db, task_id, context)
     task = StudyTaskRepository().get(db, task_id)
     if task is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="task not found")
@@ -310,16 +317,28 @@ def _run_task_command(
     return to_task_detail_response(task)
 
 
+def _task_owned(db: Session, task_id: str, context: AuthContext) -> bool:
+    task = db.get(StudyTask, task_id)
+    if task is None:
+        return False
+    if context.kind == "app_user":
+        account = db.get(Account, task.account_id)
+        return account is not None and account.user_id == context.app_user.id
+    return True
+
+
 @router.post("/bulk-action", response_model=BulkTaskActionResponse)
 def bulk_task_action(
     payload: BulkTaskActionRequest,
-    _context: AuthContext = Depends(require_csrf),
+    context: AuthContext = Depends(require_csrf),
     db: Session = Depends(get_db),
 ) -> BulkTaskActionResponse:
     service = TaskCommandService()
     results: list[BulkTaskActionItemResult] = []
     for task_id in payload.task_ids:
         try:
+            if not _task_owned(db, task_id, context):
+                raise TaskCommandNotFoundError("task not found")
             with db.begin_nested():
                 task = getattr(service, payload.action)(db, task_id)
         except TaskCommandNotFoundError as exc:
@@ -360,13 +379,15 @@ def bulk_task_action(
 @router.delete("/bulk", response_model=BulkTaskDeleteResponse)
 def bulk_delete_tasks(
     payload: BulkTaskDeleteRequest,
-    _context: AuthContext = Depends(require_csrf),
+    context: AuthContext = Depends(require_csrf),
     db: Session = Depends(get_db),
 ) -> BulkTaskDeleteResponse:
     repository = StudyTaskRepository()
     results: list[BulkTaskDeleteItemResult] = []
     for task_id in payload.task_ids:
         try:
+            if not _task_owned(db, task_id, context):
+                raise TaskDeletionNotFoundError("task not found")
             with db.begin_nested():
                 repository.delete_terminal(db, task_id)
         except TaskDeletionNotFoundError as exc:
@@ -400,50 +421,52 @@ def bulk_delete_tasks(
 
 @router.delete("/history", response_model=TaskHistoryCleanupResponse)
 def clear_terminal_task_history(
-    _context: AuthContext = Depends(require_csrf),
+    context: AuthContext = Depends(require_csrf),
     db: Session = Depends(get_db),
 ) -> TaskHistoryCleanupResponse:
-    deleted = StudyTaskRepository().delete_terminal_history(db)
+    deleted = StudyTaskRepository().delete_terminal_history(db, user_id=scoped_user_id(context))
     return TaskHistoryCleanupResponse(deleted=deleted)
 
 
 @router.post("/{task_id}/pause", response_model=StudyTaskDetailResponse)
 def pause_task(
     task_id: str,
-    _context: AuthContext = Depends(require_csrf),
+    context: AuthContext = Depends(require_csrf),
     db: Session = Depends(get_db),
 ) -> StudyTaskDetailResponse:
+    owned_task_or_404(db, task_id, context)
     return _run_task_command("pause", task_id, db)
 
 
 @router.post("/{task_id}/resume", response_model=StudyTaskDetailResponse)
 def resume_task(
     task_id: str,
-    _context: AuthContext = Depends(require_csrf),
+    context: AuthContext = Depends(require_csrf),
     db: Session = Depends(get_db),
 ) -> StudyTaskDetailResponse:
+    owned_task_or_404(db, task_id, context)
     return _run_task_command("resume", task_id, db)
 
 
 @router.post("/{task_id}/cancel", response_model=StudyTaskDetailResponse)
 def cancel_task(
     task_id: str,
-    _context: AuthContext = Depends(require_csrf),
+    context: AuthContext = Depends(require_csrf),
     db: Session = Depends(get_db),
 ) -> StudyTaskDetailResponse:
+    owned_task_or_404(db, task_id, context)
     return _run_task_command("cancel", task_id, db)
 
 
 @router.get("/{task_id}/events", response_model=list[EventResponse])
 def get_task_events(
     task_id: str,
-    _context: AuthContext = Depends(require_auth),
+    context: AuthContext = Depends(require_auth),
     db: Session = Depends(get_db),
     after: int = Query(default=0, ge=0),
     limit: int = Query(default=200, ge=1, le=500),
 ) -> list[EventResponse]:
-    if db.get(StudyTask, task_id) is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="task not found")
+    owned_task_or_404(db, task_id, context)
     events = list_task_events(db, task_id=task_id, after_id=after, limit=limit)
     return to_event_responses(db, events)
 
@@ -490,15 +513,14 @@ async def _stream_task_events(
 def stream_task_events(
     task_id: str,
     request: Request,
-    _context: AuthContext = Depends(require_auth),
+    context: AuthContext = Depends(require_auth),
     factory: sessionmaker[Session] = Depends(get_session_factory),
     last_event_id: int | None = Header(default=None, alias="Last-Event-ID", ge=0),
     after: int = Query(default=0, ge=0),
     follow: bool = Query(default=True),
 ) -> StreamingResponse:
     with factory() as session:
-        if session.get(StudyTask, task_id) is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="task not found")
+        owned_task_or_404(session, task_id, context)
     cursor = max(after, last_event_id or 0)
     return StreamingResponse(
         _stream_task_events(

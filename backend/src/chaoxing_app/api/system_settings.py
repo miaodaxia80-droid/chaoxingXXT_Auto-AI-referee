@@ -4,13 +4,22 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy.orm import Session
 
-from chaoxing_app.api.dependencies import AuthContext, get_db, require_auth, require_csrf
+from chaoxing_app.api.dependencies import (
+    AuthContext,
+    get_db,
+    get_secret_box,
+    require_admin,
+    require_admin_csrf,
+    require_auth,
+)
 from chaoxing_app.domain.settings import normalize_clock_time, validate_timezone
+from chaoxing_app.infrastructure.db.integrations import IntegrationSettingRepository
 from chaoxing_app.infrastructure.db.models import SystemSettings
 from chaoxing_app.infrastructure.db.system_settings import (
     SystemSettingsRepository,
     SystemSettingsUpdate,
 )
+from chaoxing_app.infrastructure.security.secrets import SecretBox
 
 router = APIRouter(prefix="/settings", tags=["settings"])
 
@@ -52,7 +61,7 @@ def _to_response(settings: SystemSettings) -> SystemSettingsResponse:
 
 @router.get("", response_model=SystemSettingsResponse)
 def get_system_settings(
-    _context: AuthContext = Depends(require_auth),
+    _context: AuthContext = Depends(require_admin),
     db: Session = Depends(get_db),
 ) -> SystemSettingsResponse:
     return _to_response(SystemSettingsRepository().get(db))
@@ -62,7 +71,7 @@ def get_system_settings(
 @router.put("", response_model=SystemSettingsResponse, include_in_schema=False)
 def update_system_settings(
     payload: SystemSettingsUpdateRequest,
-    _context: AuthContext = Depends(require_csrf),
+    _context: AuthContext = Depends(require_admin_csrf),
     db: Session = Depends(get_db),
 ) -> SystemSettingsResponse:
     try:
@@ -76,3 +85,34 @@ def update_system_settings(
             detail=str(exc),
         ) from exc
     return _to_response(settings)
+
+
+class AnswerPublicResponse(BaseModel):
+    """Sanitized platform answer configuration visible to app users.
+
+    Secrets (tokens, API keys) are never included.
+    """
+
+    enabled: bool
+    provider: str
+    submit_mode: str
+    threshold: float
+    config: dict[str, object]
+    profile: dict[str, object]
+
+
+@router.get("/answer-public", response_model=AnswerPublicResponse)
+def get_answer_public_settings(
+    _context: AuthContext = Depends(require_auth),
+    db: Session = Depends(get_db),
+    secret_box: SecretBox = Depends(get_secret_box),
+) -> AnswerPublicResponse:
+    view = IntegrationSettingRepository(secret_box=secret_box).get_answer(db)
+    return AnswerPublicResponse(
+        enabled=view.enabled,
+        provider=view.provider.value,
+        submit_mode=view.submit_mode.value,
+        threshold=view.threshold,
+        config=view.config,
+        profile=view.profile,
+    )

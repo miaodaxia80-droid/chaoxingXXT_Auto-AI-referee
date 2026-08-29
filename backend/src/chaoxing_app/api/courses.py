@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from sqlalchemy.orm import Session
 
 from chaoxing_app.api.course_schemas import (
     ChapterResponse,
@@ -6,7 +7,8 @@ from chaoxing_app.api.course_schemas import (
     CourseOutlineResponse,
     CourseResponse,
 )
-from chaoxing_app.api.dependencies import AuthContext, require_csrf
+from chaoxing_app.api.dependencies import AuthContext, get_db, require_csrf
+from chaoxing_app.api.ownership import owned_account_or_404
 from chaoxing_app.application.course_discovery import (
     AccountCredentialsMissingError,
     AccountDisabledError,
@@ -62,9 +64,11 @@ def _raise_http_error(error: Exception) -> None:
 @router.post("/discover", response_model=list[CourseResponse])
 def discover_courses(
     account_id: int,
-    _context: AuthContext = Depends(require_csrf),
+    context: AuthContext = Depends(require_csrf),
+    db: Session = Depends(get_db),
     service: CourseDiscoveryService = Depends(get_course_service),
 ) -> list[CourseResponse]:
+    owned_account_or_404(db, account_id, context)
     try:
         courses = service.list_courses(account_id)
     except Exception as exc:
@@ -88,9 +92,11 @@ def discover_chapters(
     account_id: int,
     course_id: str,
     payload: CourseOutlineRequest,
-    _context: AuthContext = Depends(require_csrf),
+    context: AuthContext = Depends(require_csrf),
+    db: Session = Depends(get_db),
     service: CourseDiscoveryService = Depends(get_course_service),
 ) -> CourseOutlineResponse:
+    owned_account_or_404(db, account_id, context)
     course = Course(
         course_id=course_id,
         clazz_id=payload.class_id,

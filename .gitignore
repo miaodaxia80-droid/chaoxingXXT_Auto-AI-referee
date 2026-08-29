@@ -211,3 +211,8 @@ frontend/vite.browser.config.ts
 .DS_Store
 Thumbs.db
 Desktop.ini
+
+# WeChat mini program (uni-app)
+miniapp/node_modules/
+miniapp/dist/
+miniapp/unpackage/

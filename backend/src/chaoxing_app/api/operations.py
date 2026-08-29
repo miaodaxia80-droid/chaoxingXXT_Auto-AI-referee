@@ -11,6 +11,7 @@ from chaoxing_app.api.dependencies import (
     AuthContext,
     get_app_settings,
     get_db,
+    require_admin,
     require_auth,
     require_csrf,
 )
@@ -23,6 +24,7 @@ from chaoxing_app.api.operation_schemas import (
     WorkerHealthResponse,
     WorkerRunHealthResponse,
 )
+from chaoxing_app.api.ownership import scoped_user_id
 from chaoxing_app.infrastructure.db.interventions import (
     list_manual_interventions,
     resolve_manual_interventions,
@@ -50,7 +52,7 @@ def _resource_response(metric: ResourceMetric) -> ResourceMetricResponse:
 
 @router.get("/interventions", response_model=list[ManualInterventionResponse])
 def get_manual_interventions(
-    _context: AuthContext = Depends(require_auth),
+    context: AuthContext = Depends(require_auth),
     db: Session = Depends(get_db),
     limit: int = Query(default=200, ge=1, le=200),
 ) -> list[ManualInterventionResponse]:
@@ -67,7 +69,7 @@ def get_manual_interventions(
             reason=item.reason,
             occurred_at=item.occurred_at,
         )
-        for item in list_manual_interventions(db, limit=limit)
+        for item in list_manual_interventions(db, limit=limit, user_id=scoped_user_id(context))
     ]
 
 
@@ -80,7 +82,10 @@ def resolve_interventions(
     result = resolve_manual_interventions(
         db,
         item_ids=tuple(payload.ids),
-        resolved_by=context.admin.username,
+        resolved_by=(
+            context.admin.username if context.kind == "admin" else f"user-{context.app_user.id}"
+        ),
+        user_id=scoped_user_id(context),
     )
     return ResolveInterventionsResponse(
         requested=result.requested,
@@ -93,7 +98,7 @@ def resolve_interventions(
 @router.get("/health", response_model=OperationsHealthResponse)
 def operations_health(
     request: Request,
-    _context: AuthContext = Depends(require_auth),
+    _context: AuthContext = Depends(require_admin),
     settings: AppSettings = Depends(get_app_settings),
     db: Session = Depends(get_db),
 ) -> OperationsHealthResponse:

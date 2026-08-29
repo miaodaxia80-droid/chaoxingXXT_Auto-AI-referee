@@ -136,6 +136,7 @@ class StudyTaskRepository:
         session: Session,
         *,
         account_id: int | None = None,
+        user_id: int | None = None,
         status: TaskStatus | None = None,
         limit: int = 200,
         offset: int = 0,
@@ -147,6 +148,10 @@ class StudyTaskRepository:
         statement = select(StudyTask)
         if account_id is not None:
             statement = statement.where(StudyTask.account_id == account_id)
+        if user_id is not None:
+            statement = statement.where(
+                StudyTask.account_id.in_(select(Account.id).where(Account.user_id == user_id))
+            )
         if status is not None:
             statement = statement.where(StudyTask.status == status.value)
         statement = (
@@ -178,17 +183,15 @@ class StudyTaskRepository:
             raise ActiveTaskDeletionError("task state changed; retry deletion")
         session.expire_all()
 
-    def delete_terminal_history(self, session: Session) -> int:
-        result = cast(
-            CursorResult[Any],
-            session.execute(
-                delete(StudyTask).where(
-                    StudyTask.status.in_(
-                        [status.value for status in TERMINAL_TASK_STATUSES]
-                    )
-                )
-            ),
+    def delete_terminal_history(self, session: Session, *, user_id: int | None = None) -> int:
+        statement = delete(StudyTask).where(
+            StudyTask.status.in_([status.value for status in TERMINAL_TASK_STATUSES])
         )
+        if user_id is not None:
+            statement = statement.where(
+                StudyTask.account_id.in_(select(Account.id).where(Account.user_id == user_id))
+            )
+        result = cast(CursorResult[Any], session.execute(statement))
         session.expire_all()
         return int(result.rowcount or 0)
 

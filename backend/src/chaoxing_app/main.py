@@ -29,6 +29,7 @@ from chaoxing_app.infrastructure.security.login_rate_limit import LoginRateLimit
 from chaoxing_app.infrastructure.security.passwords import PasswordService
 from chaoxing_app.infrastructure.security.secrets import MasterKeyStore, SecretBox
 from chaoxing_app.infrastructure.system_metrics import SystemMetricsSampler
+from chaoxing_app.infrastructure.wechat import WeChatClient
 from chaoxing_app.settings import AppSettings, get_settings
 from chaoxing_app.worker.process import SpawnProcessLauncher, WorkerProcessConfig
 from chaoxing_app.worker.service import SupervisorService, SupervisorServiceConfig
@@ -135,6 +136,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             max_buckets=settings.login_rate_limit_max_buckets,
         )
         app.state.login_dummy_password_hash = PasswordService().hash(secrets.token_urlsafe(32))
+        app.state.wechat_client = WeChatClient(settings.wechat_appid, settings.wechat_secret)
         app.state.system_metrics_sampler = SystemMetricsSampler()
         app.state.engine = engine
         app.state.session_factory = make_session_factory(engine)

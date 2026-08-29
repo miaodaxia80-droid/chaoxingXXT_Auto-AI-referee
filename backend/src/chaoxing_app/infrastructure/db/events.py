@@ -3,11 +3,11 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session
 
-from chaoxing_app.infrastructure.db.models import Event
+from chaoxing_app.infrastructure.db.models import Account, Event, StudyTask
 
 
 def append_event(
@@ -56,6 +56,7 @@ def list_events(
     account_id: int | None = None,
     task_id: str | None = None,
     level: str | None = None,
+    user_id: int | None = None,
     limit: int = 100,
     ascending: bool = False,
 ) -> list[Event]:
@@ -66,6 +67,15 @@ def list_events(
         statement = statement.where(Event.task_id == task_id)
     if level is not None:
         statement = statement.where(Event.level == level)
+    if user_id is not None:
+        owned_account_ids = select(Account.id).where(Account.user_id == user_id)
+        owned_task_ids = select(StudyTask.id).where(StudyTask.account_id.in_(owned_account_ids))
+        statement = statement.where(
+            or_(
+                Event.account_id.in_(owned_account_ids),
+                Event.task_id.in_(owned_task_ids),
+            )
+        )
     statement = statement.order_by(Event.id if ascending else Event.id.desc()).limit(limit)
     return list(session.scalars(statement))
 

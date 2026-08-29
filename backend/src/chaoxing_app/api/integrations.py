@@ -7,8 +7,8 @@ from chaoxing_app.api.dependencies import (
     AuthContext,
     get_db,
     get_secret_box,
-    require_auth,
-    require_csrf,
+    require_admin,
+    require_admin_csrf,
 )
 from chaoxing_app.api.integration_schemas import (
     AnswerIntegrationResponse,
@@ -80,7 +80,7 @@ def _revision_conflict(exc: IntegrationRevisionConflict) -> HTTPException:
     response_model=AnswerIntegrationResponse,
 )
 def get_answer_integration(
-    _context: AuthContext = Depends(require_auth),
+    _context: AuthContext = Depends(require_admin),
     db: Session = Depends(get_db),
     secret_box: SecretBox = Depends(get_secret_box),
 ) -> AnswerIntegrationResponse:
@@ -101,7 +101,7 @@ def get_answer_integration(
 )
 def update_answer_integration(
     payload: AnswerIntegrationUpdateRequest,
-    _context: AuthContext = Depends(require_csrf),
+    _context: AuthContext = Depends(require_admin_csrf),
     db: Session = Depends(get_db),
     secret_box: SecretBox = Depends(get_secret_box),
 ) -> AnswerIntegrationResponse:
@@ -144,7 +144,7 @@ def update_answer_integration(
 
 @router.get("/notifications", response_model=list[NotificationIntegrationResponse])
 def list_notification_integrations(
-    _context: AuthContext = Depends(require_auth),
+    _context: AuthContext = Depends(require_admin),
     db: Session = Depends(get_db),
     secret_box: SecretBox = Depends(get_secret_box),
 ) -> list[NotificationIntegrationResponse]:
@@ -161,7 +161,7 @@ def list_notification_integrations(
 )
 def get_notification_integration(
     channel: NotificationChannelKind,
-    _context: AuthContext = Depends(require_auth),
+    _context: AuthContext = Depends(require_admin),
     db: Session = Depends(get_db),
     secret_box: SecretBox = Depends(get_secret_box),
 ) -> NotificationIntegrationResponse:
@@ -183,7 +183,7 @@ def get_notification_integration(
 def update_notification_integration(
     channel: NotificationChannelKind,
     payload: NotificationIntegrationUpdateRequest,
-    _context: AuthContext = Depends(require_csrf),
+    _context: AuthContext = Depends(require_admin_csrf),
     db: Session = Depends(get_db),
     secret_box: SecretBox = Depends(get_secret_box),
 ) -> NotificationIntegrationResponse:

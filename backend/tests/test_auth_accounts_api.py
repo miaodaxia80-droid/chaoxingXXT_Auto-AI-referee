@@ -202,7 +202,12 @@ def test_authenticated_session_can_recover_csrf_and_logout() -> None:
             current = client.get("/api/v1/auth/me")
             assert current.status_code == 200
             assert current.headers["Cache-Control"] == "no-store"
-            assert current.json() == {"username": "admin", "csrf_token": csrf_token}
+            assert current.json() == {
+                "username": "admin",
+                "csrf_token": csrf_token,
+                "kind": "admin",
+                "user": None,
+            }
 
             logout = client.post(
                 "/api/v1/auth/logout",

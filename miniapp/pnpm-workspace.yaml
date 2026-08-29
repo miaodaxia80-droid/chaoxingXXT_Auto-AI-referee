@@ -1,0 +1,47 @@
+packages:
+  - .
+allowBuilds:
+  core-js: true
+  core-js-pure: true
+  esbuild: true
+  vue-demi: true
+minimumReleaseAgeExclude:
+  - '@dcloudio/uni-app-harmony@3.0.0-5020420260813001'
+  - '@dcloudio/uni-app-plus@3.0.0-5020420260813001'
+  - '@dcloudio/uni-app-uts@3.0.0-5020420260813001'
+  - '@dcloudio/uni-app-vite@3.0.0-5020420260813001'
+  - '@dcloudio/uni-app-vue@3.0.0-5020420260813001'
+  - '@dcloudio/uni-app@3.0.0-5020420260813001'
+  - '@dcloudio/uni-automator@3.0.0-5020420260813001'
+  - '@dcloudio/uni-cli-shared@3.0.0-5020420260813001'
+  - '@dcloudio/uni-cloud@3.0.0-5020420260813001'
+  - '@dcloudio/uni-components@3.0.0-5020420260813001'
+  - '@dcloudio/uni-console@3.0.0-5020420260813001'
+  - '@dcloudio/uni-h5-vite@3.0.0-5020420260813001'
+  - '@dcloudio/uni-h5-vue@3.0.0-5020420260813001'
+  - '@dcloudio/uni-h5@3.0.0-5020420260813001'
+  - '@dcloudio/uni-i18n@3.0.0-5020420260813001'
+  - '@dcloudio/uni-mp-alipay@3.0.0-5020420260813001'
+  - '@dcloudio/uni-mp-baidu@3.0.0-5020420260813001'
+  - '@dcloudio/uni-mp-compiler@3.0.0-5020420260813001'
+  - '@dcloudio/uni-mp-harmony@3.0.0-5020420260813001'
+  - '@dcloudio/uni-mp-jd@3.0.0-5020420260813001'
+  - '@dcloudio/uni-mp-kuaishou@3.0.0-5020420260813001'
+  - '@dcloudio/uni-mp-lark@3.0.0-5020420260813001'
+  - '@dcloudio/uni-mp-qq@3.0.0-5020420260813001'
+  - '@dcloudio/uni-mp-toutiao@3.0.0-5020420260813001'
+  - '@dcloudio/uni-mp-vite@3.0.0-5020420260813001'
+  - '@dcloudio/uni-mp-vue@3.0.0-5020420260813001'
+  - '@dcloudio/uni-mp-weixin@3.0.0-5020420260813001'
+  - '@dcloudio/uni-mp-xhs@3.0.0-5020420260813001'
+  - '@dcloudio/uni-nvue-styler@3.0.0-5020420260813001'
+  - '@dcloudio/uni-push@3.0.0-5020420260813001'
+  - '@dcloudio/uni-quickapp-webview@3.0.0-5020420260813001'
+  - '@dcloudio/uni-shared@3.0.0-5020420260813001'
+  - '@dcloudio/uni-stacktracey@3.0.0-5020420260813001'
+  - '@dcloudio/uni-stat@3.0.0-5020420260813001'
+  - '@dcloudio/vite-plugin-uni@3.0.0-5020420260813001'
+onlyBuiltDependencies:
+  - esbuild
+  - core-js
+  - core-js-pure

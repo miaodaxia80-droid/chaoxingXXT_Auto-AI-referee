@@ -46,10 +46,15 @@ class ResolutionResult:
     not_actionable: int
 
 
-def list_manual_interventions(session: Session, *, limit: int = 200) -> list[ManualIntervention]:
+def list_manual_interventions(
+    session: Session,
+    *,
+    limit: int = 200,
+    user_id: int | None = None,
+) -> list[ManualIntervention]:
     if not 1 <= limit <= 200:
         raise ValueError("manual intervention limit must be between 1 and 200")
-    rows = session.execute(
+    statement = (
         select(TaskChapter, StudyTask, Account)
         .join(StudyTask, StudyTask.id == TaskChapter.task_id)
         .join(Account, Account.id == StudyTask.account_id)
@@ -62,8 +67,11 @@ def list_manual_interventions(session: Session, *, limit: int = 200) -> list[Man
             TaskChapter.status.in_(_ATTENTION_STATUSES),
             ManualInterventionResolution.id.is_(None),
         )
-        .order_by(TaskChapter.finished_at.desc(), TaskChapter.id.desc())
-        .limit(limit)
+    )
+    if user_id is not None:
+        statement = statement.where(Account.user_id == user_id)
+    rows = session.execute(
+        statement.order_by(TaskChapter.finished_at.desc(), TaskChapter.id.desc()).limit(limit)
     ).all()
     return [
         ManualIntervention(
@@ -88,6 +96,7 @@ def resolve_manual_interventions(
     item_ids: tuple[int, ...],
     resolved_by: str,
     resolved_at: datetime | None = None,
+    user_id: int | None = None,
 ) -> ResolutionResult:
     unique_ids = tuple(dict.fromkeys(item_ids))
     if not unique_ids:
@@ -95,13 +104,18 @@ def resolve_manual_interventions(
     if len(unique_ids) > 200:
         raise ValueError("at most 200 manual interventions can be resolved at once")
 
+    row_statement = (
+        select(TaskChapter, StudyTask)
+        .join(StudyTask, StudyTask.id == TaskChapter.task_id)
+        .where(TaskChapter.id.in_(unique_ids))
+    )
+    if user_id is not None:
+        row_statement = row_statement.join(
+            Account, Account.id == StudyTask.account_id
+        ).where(Account.user_id == user_id)
     rows = {
         chapter.id: (chapter, task)
-        for chapter, task in session.execute(
-            select(TaskChapter, StudyTask)
-            .join(StudyTask, StudyTask.id == TaskChapter.task_id)
-            .where(TaskChapter.id.in_(unique_ids))
-        ).all()
+        for chapter, task in session.execute(row_statement).all()
     }
     task_ids = tuple({task.id for _chapter, task in rows.values()})
     existing = {

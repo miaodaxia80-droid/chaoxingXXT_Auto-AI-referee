@@ -13,6 +13,8 @@ from chaoxing_app.api.dependencies import (
     require_auth,
     require_csrf,
 )
+from chaoxing_app.api.ownership import owned_account_or_404, scoped_user_id
+from chaoxing_app.api.quotas import ensure_account_quota
 from chaoxing_app.api.schemas import (
     AccountCreateRequest,
     AccountImportResponse,
@@ -64,23 +66,27 @@ def to_response(account: Account) -> AccountResponse:
 
 @router.get("", response_model=list[AccountResponse])
 def list_accounts(
-    _context: AuthContext = Depends(require_auth),
+    context: AuthContext = Depends(require_auth),
     db: Session = Depends(get_db),
     secret_box: SecretBox = Depends(get_secret_box),
     fingerprint_key: bytes = Depends(get_fingerprint_key),
 ) -> list[AccountResponse]:
     repository = AccountRepository(secret_box=secret_box, fingerprint_key=fingerprint_key)
-    return [to_response(account) for account in repository.list(db)]
+    return [
+        to_response(account) for account in repository.list(db, user_id=scoped_user_id(context))
+    ]
 
 
 @router.post("", response_model=AccountResponse, status_code=status.HTTP_201_CREATED)
 def create_account(
     payload: AccountCreateRequest,
-    _context: AuthContext = Depends(require_csrf),
+    context: AuthContext = Depends(require_csrf),
     db: Session = Depends(get_db),
     secret_box: SecretBox = Depends(get_secret_box),
     fingerprint_key: bytes = Depends(get_fingerprint_key),
 ) -> AccountResponse:
+    if context.kind == "app_user":
+        ensure_account_quota(db, context.app_user)
     repository = AccountRepository(secret_box=secret_box, fingerprint_key=fingerprint_key)
     try:
         account = repository.create(
@@ -95,6 +101,7 @@ def create_account(
                 chapter_concurrency=payload.chapter_concurrency,
                 unopened_policy=payload.unopened_policy,
                 answer_profile_override=payload.answer_profile_override,
+                user_id=scoped_user_id(context),
             ),
         )
     except DuplicateAccountError as exc:
@@ -120,7 +127,7 @@ def _import_payload(row: dict[str | None, object]) -> AccountCreateRequest:
 @router.post("/import", response_model=AccountImportResponse)
 async def import_accounts(
     request: Request,
-    _context: AuthContext = Depends(require_csrf),
+    context: AuthContext = Depends(require_csrf),
     db: Session = Depends(get_db),
     secret_box: SecretBox = Depends(get_secret_box),
     fingerprint_key: bytes = Depends(get_fingerprint_key),
@@ -181,6 +188,7 @@ async def import_accounts(
         )
 
     repository = AccountRepository(secret_box=secret_box, fingerprint_key=fingerprint_key)
+    owner_user_id = scoped_user_id(context)
     results: list[AccountImportRowResponse] = []
     for line, row in rows:
         username = row.get("username")
@@ -191,6 +199,8 @@ async def import_accounts(
         )
         try:
             payload = _import_payload(row)
+            if context.kind == "app_user":
+                ensure_account_quota(db, context.app_user)
             with db.begin_nested():
                 account = repository.create(
                     db,
@@ -204,6 +214,7 @@ async def import_accounts(
                         chapter_concurrency=payload.chapter_concurrency,
                         unopened_policy=payload.unopened_policy,
                         answer_profile_override=payload.answer_profile_override,
+                        user_id=owner_user_id,
                     ),
                 )
             results.append(
@@ -221,6 +232,19 @@ async def import_accounts(
                     status="duplicate",
                     username_hint=username_hint,
                     error_code="account_exists",
+                )
+            )
+        except HTTPException as exc:
+            results.append(
+                AccountImportRowResponse(
+                    line=line,
+                    status="invalid",
+                    username_hint=username_hint,
+                    error_code=(
+                        "account_quota_exceeded"
+                        if exc.detail == "account quota exceeded"
+                        else "invalid_row"
+                    ),
                 )
             )
         except (ValidationError, ValueError):
@@ -246,11 +270,12 @@ async def import_accounts(
 def update_account(
     account_id: int,
     payload: AccountUpdateRequest,
-    _context: AuthContext = Depends(require_csrf),
+    context: AuthContext = Depends(require_csrf),
     db: Session = Depends(get_db),
     secret_box: SecretBox = Depends(get_secret_box),
     fingerprint_key: bytes = Depends(get_fingerprint_key),
 ) -> AccountResponse:
+    owned_account_or_404(db, account_id, context)
     repository = AccountRepository(secret_box=secret_box, fingerprint_key=fingerprint_key)
     try:
         account = repository.update(
@@ -282,11 +307,12 @@ def update_account(
 @router.delete("/{account_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_account(
     account_id: int,
-    _context: AuthContext = Depends(require_csrf),
+    context: AuthContext = Depends(require_csrf),
     db: Session = Depends(get_db),
     secret_box: SecretBox = Depends(get_secret_box),
     fingerprint_key: bytes = Depends(get_fingerprint_key),
 ) -> Response:
+    owned_account_or_404(db, account_id, context)
     repository = AccountRepository(secret_box=secret_box, fingerprint_key=fingerprint_key)
     if not repository.delete(db, account_id):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="account not found")

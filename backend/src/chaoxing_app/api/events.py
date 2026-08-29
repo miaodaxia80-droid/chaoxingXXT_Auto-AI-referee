@@ -12,10 +12,11 @@ from chaoxing_app.api.dependencies import (
     AuthContext,
     get_db,
     get_session_factory,
+    require_admin_csrf,
     require_auth,
-    require_csrf,
 )
 from chaoxing_app.api.event_schemas import EventLevel, EventResponse, to_event_responses
+from chaoxing_app.api.ownership import scoped_user_id
 from chaoxing_app.infrastructure.db.events import (
     archive_events_before,
     archived_event_count,
@@ -38,7 +39,7 @@ class EventArchiveResponse(BaseModel):
 @router.post("/archive", response_model=EventArchiveResponse)
 def archive_events(
     payload: EventArchiveRequest,
-    _context: AuthContext = Depends(require_csrf),
+    _context: AuthContext = Depends(require_admin_csrf),
     db: Session = Depends(get_db),
 ) -> EventArchiveResponse:
     before = payload.before
@@ -51,7 +52,7 @@ def archive_events(
 
 @router.get("", response_model=list[EventResponse])
 def get_events(
-    _context: AuthContext = Depends(require_auth),
+    context: AuthContext = Depends(require_auth),
     db: Session = Depends(get_db),
     after_id: int = Query(default=0, ge=0),
     account_id: int | None = Query(default=None, gt=0),
@@ -65,6 +66,7 @@ def get_events(
         account_id=account_id,
         task_id=task_id,
         level=level,
+        user_id=scoped_user_id(context),
         limit=limit,
     )
     return to_event_responses(db, events)
@@ -88,6 +90,7 @@ async def _stream_events(
     account_id: int | None,
     task_id: str | None,
     level: EventLevel | None,
+    user_id: int | None,
 ) -> AsyncIterator[str]:
     cursor = after_id
     heartbeat_deadline = asyncio.get_running_loop().time() + 15
@@ -99,6 +102,7 @@ async def _stream_events(
                 account_id=account_id,
                 task_id=task_id,
                 level=level,
+                user_id=user_id,
                 limit=200,
                 ascending=True,
             )
@@ -118,7 +122,7 @@ async def _stream_events(
 @router.get("/stream", response_class=StreamingResponse)
 def stream_events(
     request: Request,
-    _context: AuthContext = Depends(require_auth),
+    context: AuthContext = Depends(require_auth),
     factory: sessionmaker[Session] = Depends(get_session_factory),
     last_event_id: int | None = Header(default=None, alias="Last-Event-ID", ge=0),
     after_id: int = Query(default=0, ge=0),
@@ -137,6 +141,7 @@ def stream_events(
             account_id=account_id,
             task_id=task_id,
             level=level,
+            user_id=scoped_user_id(context),
         ),
         media_type="text/event-stream",
         headers={

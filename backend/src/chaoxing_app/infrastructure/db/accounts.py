@@ -26,6 +26,7 @@ class NewAccount:
     chapter_concurrency: int = 1
     unopened_policy: str = "retry"
     answer_profile_override: dict[str, object] | None = None
+    user_id: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,6 +65,7 @@ class AccountRepository:
         if not username:
             raise ValueError("username must not be empty")
         account = Account(
+            user_id=new_account.user_id,
             remark=new_account.remark.strip(),
             username_hint=mask_username(username),
             username_fingerprint=identity_fingerprint(username, key=self._fingerprint_key),
@@ -103,8 +105,11 @@ class AccountRepository:
         session.flush()
         return account
 
-    def list(self, session: Session) -> list[Account]:
-        return list(session.scalars(select(Account).order_by(Account.id)))
+    def list(self, session: Session, *, user_id: int | None = None) -> list[Account]:
+        statement = select(Account).order_by(Account.id)
+        if user_id is not None:
+            statement = statement.where(Account.user_id == user_id)
+        return list(session.scalars(statement))
 
     def get(self, session: Session, account_id: int) -> Account | None:
         return session.get(Account, account_id)

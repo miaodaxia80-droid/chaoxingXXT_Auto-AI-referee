@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -60,9 +61,79 @@ class AuthResponse(BaseModel):
     expires_at: str
 
 
-class CurrentUserResponse(BaseModel):
-    username: str
+class AppUserResponse(BaseModel):
+    id: int
+    nickname: str
+    avatar_url: str
+    quotas: dict[str, int]
+
+
+class WxLoginRequest(BaseModel):
+    code: str = Field(min_length=1, max_length=128)
+    nickname: str | None = Field(default=None, max_length=120)
+    avatar_url: str | None = Field(default=None, max_length=2_048)
+
+
+class DevLoginRequest(BaseModel):
+    """Development-only login for browser previews (H5 build).
+
+    The endpoint is gated behind CX_DEV_LOGIN_ENABLED and never available in production.
+    """
+
+    token: str = Field(min_length=1, max_length=64)
+    nickname: str | None = Field(default=None, max_length=120)
+
+
+class WxLoginResponse(BaseModel):
     csrf_token: str
+    expires_at: str
+    user: AppUserResponse
+
+
+class CurrentUserResponse(BaseModel):
+    username: str | None = None
+    csrf_token: str
+    kind: Literal["admin", "app_user"]
+    user: AppUserResponse | None = None
+
+
+_QUOTA_KEYS = {"max_accounts", "max_active_tasks"}
+
+
+class AppUserAdminResponse(BaseModel):
+    id: int
+    openid: str
+    nickname: str
+    avatar_url: str
+    disabled: bool
+    quotas: dict[str, int]
+    account_count: int
+    active_task_count: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class AppUserAdminUpdateRequest(BaseModel):
+    disabled: bool | None = None
+    nickname: str | None = Field(default=None, max_length=120)
+    avatar_url: str | None = Field(default=None, max_length=2_048)
+    quotas: dict[str, int] | None = None
+
+    @field_validator("quotas")
+    @classmethod
+    def validate_quotas(cls, value: dict[str, int] | None) -> dict[str, int] | None:
+        if value is None:
+            return None
+        if set(value) - _QUOTA_KEYS:
+            raise ValueError("unknown quota keys")
+        if any(item < 0 or item > 10_000 for item in value.values()):
+            raise ValueError("quota values must be between 0 and 10000")
+        return value
+
+
+class AppUserProfileUpdateRequest(BaseModel):
+    nickname: str | None = Field(default=None, max_length=120)
+    avatar_url: str | None = Field(default=None, max_length=2_048)
 
 
 class AccountCreateRequest(BaseModel):

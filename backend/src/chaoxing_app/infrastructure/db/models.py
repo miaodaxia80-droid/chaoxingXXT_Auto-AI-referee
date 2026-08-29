@@ -32,6 +32,11 @@ def new_public_id() -> str:
     return str(uuid.uuid4())
 
 
+def default_user_quotas() -> dict[str, int]:
+    """Platform defaults for a WeChat mini-program tenant."""
+    return {"max_accounts": 3, "max_active_tasks": 1}
+
+
 class TimestampMixin:
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, nullable=False
@@ -56,12 +61,42 @@ class AdminUser(TimestampMixin, Base):
     )
 
 
+class AppUser(TimestampMixin, Base):
+    """A WeChat mini-program tenant, identified by its WeChat openid."""
+
+    __tablename__ = "app_users"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    openid: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    nickname: Mapped[str] = mapped_column(String(120), default="", nullable=False)
+    avatar_url: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    disabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    quotas: Mapped[dict[str, Any]] = mapped_column(
+        JSON, default=default_user_quotas, nullable=False
+    )
+    session_version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+
+    sessions: Mapped[list[WebSession]] = relationship(
+        back_populates="app_user", cascade="all, delete-orphan"
+    )
+    accounts: Mapped[list[Account]] = relationship(back_populates="user")
+
+
 class WebSession(Base):
     __tablename__ = "web_sessions"
+    __table_args__ = (
+        CheckConstraint(
+            "(admin_id IS NULL) != (app_user_id IS NULL)",
+            name="single_principal",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_public_id)
-    admin_id: Mapped[int] = mapped_column(
-        ForeignKey("admin_users.id", ondelete="CASCADE"), nullable=False, index=True
+    admin_id: Mapped[int | None] = mapped_column(
+        ForeignKey("admin_users.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    app_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("app_users.id", ondelete="CASCADE"), nullable=True, index=True
     )
     token_digest: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
     csrf_digest: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -75,7 +110,8 @@ class WebSession(Base):
     )
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
-    admin: Mapped[AdminUser] = relationship(back_populates="sessions")
+    admin: Mapped[AdminUser | None] = relationship(back_populates="sessions")
+    app_user: Mapped[AppUser | None] = relationship(back_populates="sessions")
 
 
 class SystemSettings(TimestampMixin, Base):
@@ -110,6 +146,9 @@ class Account(TimestampMixin, Base):
     __tablename__ = "accounts"
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("app_users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     remark: Mapped[str] = mapped_column(String(120), default="", nullable=False)
     username_hint: Mapped[str] = mapped_column(String(80), default="", nullable=False)
     username_fingerprint: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
@@ -121,6 +160,7 @@ class Account(TimestampMixin, Base):
     lease_version: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     answer_profile_override: Mapped[dict[str, Any] | None] = mapped_column(JSON)
 
+    user: Mapped[AppUser | None] = relationship(back_populates="accounts")
     secret: Mapped[AccountSecret] = relationship(
         back_populates="account", cascade="all, delete-orphan", uselist=False
     )

@@ -4,16 +4,17 @@ import secrets
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import cast
+from typing import Literal, cast
 
 from fastapi import Depends, Header, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
-from chaoxing_app.infrastructure.db.models import AdminUser, WebSession
+from chaoxing_app.infrastructure.db.models import AdminUser, AppUser, WebSession
 from chaoxing_app.infrastructure.security.login_rate_limit import LoginRateLimiter
 from chaoxing_app.infrastructure.security.secrets import SecretBox
 from chaoxing_app.infrastructure.security.tokens import digest_session_token
+from chaoxing_app.infrastructure.wechat import WeChatClient
 from chaoxing_app.settings import AppSettings, normalize_http_origin
 
 
@@ -41,6 +42,10 @@ def get_login_dummy_password_hash(request: Request) -> str:
     return cast(str, request.app.state.login_dummy_password_hash)
 
 
+def get_wechat_client(request: Request) -> WeChatClient:
+    return cast(WeChatClient, request.app.state.wechat_client)
+
+
 def get_db(
     factory: sessionmaker[Session] = Depends(get_session_factory),
 ) -> Iterator[Session]:
@@ -57,9 +62,25 @@ def get_db(
 
 @dataclass(frozen=True, slots=True)
 class AuthContext:
-    admin: AdminUser
+    principal: AdminUser | AppUser
     web_session: WebSession
     session_token: str
+
+    @property
+    def kind(self) -> Literal["admin", "app_user"]:
+        return "admin" if isinstance(self.principal, AdminUser) else "app_user"
+
+    @property
+    def admin(self) -> AdminUser:
+        if self.kind != "admin":
+            raise AttributeError("authenticated principal is not an admin")
+        return cast(AdminUser, self.principal)
+
+    @property
+    def app_user(self) -> AppUser:
+        if self.kind != "app_user":
+            raise AttributeError("authenticated principal is not an app user")
+        return cast(AppUser, self.principal)
 
 
 def _as_utc(value: datetime) -> datetime:
@@ -85,10 +106,41 @@ def require_auth(
         or _as_utc(web_session.expires_at) <= now
     ):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="session expired")
-    admin = web_session.admin
-    if admin.disabled or admin.session_version != web_session.session_version:
+    if web_session.admin_id is not None:
+        principal: AdminUser | AppUser | None = web_session.admin
+    else:
+        principal = web_session.app_user
+    if (
+        principal is None
+        or principal.disabled
+        or principal.session_version != web_session.session_version
+    ):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="session revoked")
-    return AuthContext(admin=admin, web_session=web_session, session_token=cookie_value)
+    return AuthContext(principal=principal, web_session=web_session, session_token=cookie_value)
+
+
+def require_app_user(
+    context: AuthContext = Depends(require_auth),
+) -> AuthContext:
+    """Restrict an endpoint to WeChat mini-program tenants (not admins)."""
+    if context.kind != "app_user":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="admin session cannot access app user resources",
+        )
+    return context
+
+
+def require_admin(
+    context: AuthContext = Depends(require_auth),
+) -> AuthContext:
+    """Restrict an endpoint to the operations administrator."""
+    if context.kind != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="admin privileges required",
+        )
+    return context
 
 
 def _require_trusted_origin(request: Request, settings: AppSettings) -> None:
@@ -121,4 +173,16 @@ def require_csrf(
     ):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="invalid CSRF token")
     _require_trusted_origin(request, settings)
+    return context
+
+
+def require_admin_csrf(
+    context: AuthContext = Depends(require_csrf),
+) -> AuthContext:
+    """CSRF-protected admin-only endpoint."""
+    if context.kind != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="admin privileges required",
+        )
     return context

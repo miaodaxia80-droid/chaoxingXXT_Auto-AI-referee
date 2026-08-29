@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from chaoxing_app.infrastructure.db.base import Base
 
-CURRENT_SCHEMA_REVISION = "20260812_0003"
+CURRENT_SCHEMA_REVISION = "20260813_0004"
 
 
 class DatabaseSchemaError(RuntimeError):

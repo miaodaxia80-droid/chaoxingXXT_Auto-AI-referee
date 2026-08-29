@@ -10,7 +10,11 @@ from sqlalchemy.orm import Session
 
 from alembic import command
 from chaoxing_app.domain.tasks import TaskStatus
-from chaoxing_app.infrastructure.db.engine import create_database_engine, create_schema
+from chaoxing_app.infrastructure.db.engine import (
+    CURRENT_SCHEMA_REVISION,
+    create_database_engine,
+    create_schema,
+)
 from chaoxing_app.infrastructure.db.models import Account, AccountLease, AdminUser, StudyTask
 from chaoxing_app.infrastructure.db.task_queue import claim_next_task
 
@@ -158,7 +162,7 @@ def test_alembic_creates_missing_sqlite_parent_directory(tmp_path: Path) -> None
             revision = connection.execute(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
-            assert revision == "20260812_0003"
+            assert revision == CURRENT_SCHEMA_REVISION
     finally:
         engine.dispose()
 
