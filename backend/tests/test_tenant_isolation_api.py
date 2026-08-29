@@ -5,10 +5,11 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from chaoxing_app.domain.tasks import ChapterStatus
-from chaoxing_app.infrastructure.db.models import Account, StudyTask
+from chaoxing_app.infrastructure.db.models import Account, AppUser, StudyTask
 from chaoxing_app.infrastructure.wechat import WeChatSessionInfo
 from chaoxing_app.main import create_app
 from chaoxing_app.settings import AppSettings
@@ -57,6 +58,15 @@ def login_app_user(client: TestClient, app: FastAPI, openid: str) -> str:
     response = client.post("/api/v1/auth/wx/login", json={"code": "code"})
     assert response.status_code == 200
     return response.json()["csrf_token"]
+
+
+def grant_task_credits(app: FastAPI, openid: str, credits: int = 10) -> None:
+    """Test helper for the entitlement gate: grant count-card credits directly."""
+    with Session(app.state.engine) as db:
+        user = db.scalar(select(AppUser).where(AppUser.openid == openid))
+        assert user is not None
+        user.task_credits = credits
+        db.commit()
 
 
 def create_account(client: TestClient, csrf: str, username: str) -> int:
@@ -124,6 +134,7 @@ def test_app_user_cannot_access_another_users_tasks_and_events() -> None:
         app, client = make_client(temp_dir)
         with client:
             csrf_a = login_app_user(client, app, "openid-a")
+            grant_task_credits(app, "openid-a")
             account_id = create_account(client, csrf_a, "chaoxing-user-a")
             task_id = create_task(client, csrf_a, account_id, "course-1")
 
@@ -156,6 +167,7 @@ def test_interventions_are_scoped_to_owner() -> None:
         app, client = make_client(temp_dir)
         with client:
             csrf_a = login_app_user(client, app, "openid-a")
+            grant_task_credits(app, "openid-a")
             account_id = create_account(client, csrf_a, "chaoxing-user-a")
             task_id = create_task(client, csrf_a, account_id, "course-1")
 
@@ -182,6 +194,7 @@ def test_interventions_are_scoped_to_owner() -> None:
             assert body["not_actionable"] == 1
 
             csrf_a2 = login_app_user(client, app, "openid-a")
+            grant_task_credits(app, "openid-a")
             own = client.get("/api/v1/operations/interventions").json()
             assert [item["task_id"] for item in own] == [task_id]
             own_resolve = client.post(

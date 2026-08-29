@@ -38,11 +38,11 @@ async function submit() {
   const username = form.username.trim()
   if (isSetup.value) {
     if (username.length < 3) {
-      errorMessage.value = '管理员账号至少需要 3 个字符'
+      errorMessage.value = '账号至少需要 3 个字符'
       return
     }
     if (username.length > 80) {
-      errorMessage.value = '管理员账号不能超过 80 个字符'
+      errorMessage.value = '账号不能超过 80 个字符'
       return
     }
   }
@@ -81,13 +81,13 @@ async function submit() {
       <div class="auth-heading">
         <span class="auth-icon"><LockKeyhole :size="22" /></span>
         <div>
-          <h1 id="auth-title">{{ isSetup ? '初始化控制台' : '管理员登录' }}</h1>
+          <h1 id="auth-title">{{ isSetup ? '初始化控制台' : '登录' }}</h1>
           <p>{{ isSetup ? '创建首个本地管理员账号' : '进入学习任务控制台' }}</p>
         </div>
       </div>
       <NAlert v-if="errorMessage" type="error" :show-icon="false">{{ errorMessage }}</NAlert>
       <NForm :model="form" label-placement="top" @submit.prevent="submit">
-        <NFormItem label="管理员账号">
+        <NFormItem label="账号">
           <NInput
             v-model:value="form.username"
             autocomplete="username"

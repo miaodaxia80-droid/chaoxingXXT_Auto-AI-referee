@@ -5,7 +5,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from chaoxing_app.domain.tasks import TERMINAL_TASK_STATUSES, TaskStatus
-from chaoxing_app.infrastructure.db.models import Account, AppUser, StudyTask
+from chaoxing_app.infrastructure.db.models import Account, AppUser, StudyTask, ensure_utc, utc_now
 
 ACTIVE_TASK_STATUSES = [
     task_status.value for task_status in TaskStatus if task_status not in TERMINAL_TASK_STATUSES
@@ -58,3 +58,23 @@ def ensure_task_quota(db: Session, user: AppUser) -> None:
             status_code=status.HTTP_409_CONFLICT,
             detail="task quota exceeded",
         )
+
+
+def ensure_task_entitlement(user: AppUser) -> None:
+    """Card-key entitlement gate: unlimited while a time card is active;
+    otherwise consumes one count-card credit; rejects when neither exists.
+
+    Credits are consumed at task creation (queuing occupies one execution
+    slot; cancellation does not refund).
+    """
+    now = utc_now()
+    expires = ensure_utc(user.plan_expires_at)
+    if expires is not None and expires > now:
+        return
+    if user.task_credits > 0:
+        user.task_credits -= 1
+        return
+    raise HTTPException(
+        status_code=status.HTTP_402_PAYMENT_REQUIRED,
+        detail="task entitlement exhausted; redeem a card key",
+    )

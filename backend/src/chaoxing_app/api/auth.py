@@ -61,6 +61,9 @@ def _app_user_response(user: AppUser) -> AppUserResponse:
         nickname=user.nickname,
         avatar_url=user.avatar_url,
         quotas=dict(user.quotas),
+        username=user.username,
+        plan_expires_at=user.plan_expires_at,
+        task_credits=user.task_credits,
     )
 
 
@@ -159,23 +162,41 @@ def login(
         raise _too_many_attempts(rate_limit)
 
     admin = db.scalar(select(AdminUser).where(AdminUser.username == payload.username))
-    candidate_hash = (
-        admin.password_hash if admin is not None and not admin.disabled else dummy_password_hash
-    )
+    # Fall back to local app-user (username+password) when no admin matches.
+    app_user: AppUser | None = None
+    if admin is None:
+        candidate = db.scalar(select(AppUser).where(AppUser.username == payload.username))
+        if candidate is not None and candidate.password_hash:
+            app_user = candidate
+    if admin is not None and not admin.disabled:
+        candidate_hash: str = admin.password_hash
+    elif app_user is not None and not app_user.disabled:
+        candidate_hash = app_user.password_hash or dummy_password_hash
+    else:
+        candidate_hash = dummy_password_hash
     password_valid = password_service.verify(candidate_hash, payload.password)
-    if admin is None or admin.disabled or not password_valid:
-        rate_limit = limiter.record_failure(source, payload.username)
-        if not rate_limit.allowed:
-            raise _too_many_attempts(rate_limit)
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid credentials")
 
-    limiter.clear(source, payload.username)
-    csrf_plaintext, expires_at = _issue_session(db, response, settings, admin=admin)
-    return AuthResponse(
-        username=admin.username,
-        csrf_token=csrf_plaintext,
-        expires_at=expires_at,
-    )
+    if admin is not None and not admin.disabled and password_valid:
+        limiter.clear(source, payload.username)
+        csrf_plaintext, expires_at = _issue_session(db, response, settings, admin=admin)
+        return AuthResponse(
+            username=admin.username,
+            csrf_token=csrf_plaintext,
+            expires_at=expires_at,
+        )
+    if app_user is not None and not app_user.disabled and password_valid:
+        limiter.clear(source, payload.username)
+        csrf_plaintext, expires_at = _issue_session(db, response, settings, app_user=app_user)
+        return AuthResponse(
+            username=app_user.username or app_user.nickname,
+            csrf_token=csrf_plaintext,
+            expires_at=expires_at,
+        )
+
+    rate_limit = limiter.record_failure(source, payload.username)
+    if not rate_limit.allowed:
+        raise _too_many_attempts(rate_limit)
+    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid credentials")
 
 
 @router.post("/wx/login", response_model=WxLoginResponse)

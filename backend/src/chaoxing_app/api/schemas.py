@@ -66,6 +66,9 @@ class AppUserResponse(BaseModel):
     nickname: str
     avatar_url: str
     quotas: dict[str, int]
+    username: str | None = None
+    plan_expires_at: datetime | None = None
+    task_credits: int = 0
 
 
 class WxLoginRequest(BaseModel):
@@ -103,10 +106,14 @@ _QUOTA_KEYS = {"max_accounts", "max_active_tasks"}
 class AppUserAdminResponse(BaseModel):
     id: int
     openid: str
+    username: str | None = None
+    has_password: bool = False
     nickname: str
     avatar_url: str
     disabled: bool
     quotas: dict[str, int]
+    plan_expires_at: datetime | None = None
+    task_credits: int = 0
     account_count: int
     active_task_count: int
     created_at: datetime
@@ -118,6 +125,16 @@ class AppUserAdminUpdateRequest(BaseModel):
     nickname: str | None = Field(default=None, max_length=120)
     avatar_url: str | None = Field(default=None, max_length=2_048)
     quotas: dict[str, int] | None = None
+    # Password reset / entitlement adjustments: time cards extend from
+    # max(now, current expiry); credits may go negative but floor at zero.
+    password: str | None = Field(default=None, min_length=8, max_length=256)
+    plan_extend_days: int | None = Field(default=None, ge=0, le=3_650)
+    task_credits_add: int | None = Field(default=None, ge=-100_000, le=100_000)
+
+    @field_validator("password")
+    @classmethod
+    def validate_password(cls, value: str | None) -> str | None:
+        return None if value is None else _validate_admin_password(value)
 
     @field_validator("quotas")
     @classmethod
@@ -134,6 +151,84 @@ class AppUserAdminUpdateRequest(BaseModel):
 class AppUserProfileUpdateRequest(BaseModel):
     nickname: str | None = Field(default=None, max_length=120)
     avatar_url: str | None = Field(default=None, max_length=2_048)
+
+
+# --- Local app users (username/password) and card keys ---
+
+
+class CreateAppUserRequest(BaseModel):
+    username: str = Field(min_length=3, max_length=80, pattern=r"^[A-Za-z0-9_.-]+$")
+    password: str = Field(min_length=8, max_length=256)
+    nickname: str = Field(default="", max_length=120)
+    quotas: dict[str, int] | None = None
+
+    @field_validator("password")
+    @classmethod
+    def validate_password(cls, value: str) -> str:
+        return _validate_admin_password(value)
+
+    @field_validator("quotas")
+    @classmethod
+    def validate_quotas(cls, value: dict[str, int] | None) -> dict[str, int] | None:
+        if value is None:
+            return None
+        if set(value) - _QUOTA_KEYS:
+            raise ValueError("unknown quota keys")
+        return value
+
+
+class CardKeyIssueItem(BaseModel):
+    code: str
+    kind: str
+    value: int
+
+
+class CardKeyCreateRequest(BaseModel):
+    kind: Literal["time", "count"]
+    value: int
+    count: int = Field(default=1, ge=1, le=500)
+    batch: str = Field(default="", max_length=120)
+
+    @field_validator("value")
+    @classmethod
+    def validate_value(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("value must be positive")
+        return value
+
+
+class CardKeyResponse(BaseModel):
+    id: int
+    code_hint: str
+    kind: str
+    value: int
+    batch: str
+    status: str
+    used_by: int | None = None
+    used_at: datetime | None = None
+    created_at: datetime
+
+
+class CardKeyGenerateResponse(BaseModel):
+    created: int
+    items: list[CardKeyIssueItem]
+
+
+class CardKeyRedeemRequest(BaseModel):
+    code: str = Field(min_length=4, max_length=64)
+
+
+class CardKeyRedeemResponse(BaseModel):
+    kind: str
+    value: int
+    plan_expires_at: datetime | None
+    task_credits: int
+
+
+class EntitlementResponse(BaseModel):
+    plan_expires_at: datetime | None
+    task_credits: int
+    active: bool
 
 
 class AccountCreateRequest(BaseModel):

@@ -19,7 +19,7 @@ from chaoxing_app.api.dependencies import (
 )
 from chaoxing_app.api.event_schemas import EventResponse, to_event_responses
 from chaoxing_app.api.ownership import owned_account_or_404, owned_task_or_404, scoped_user_id
-from chaoxing_app.api.quotas import ensure_task_quota
+from chaoxing_app.api.quotas import ensure_task_entitlement, ensure_task_quota
 from chaoxing_app.api.task_schemas import (
     BulkStudyTaskCreateRequest,
     BulkTaskActionItemResult,
@@ -141,6 +141,7 @@ def _create_task(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="account is disabled")
     if context.kind == "app_user":
         ensure_task_quota(db, context.app_user)
+        ensure_task_entitlement(context.app_user)
 
     repository = StudyTaskRepository()
     try:

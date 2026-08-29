@@ -68,6 +68,15 @@ def set_quotas(app: FastAPI, openid: str, quotas: dict[str, int]) -> int:
         return user.id
 
 
+def grant_task_credits(app: FastAPI, openid: str, credits: int = 10) -> None:
+    """Test helper for the entitlement gate: grant count-card credits directly."""
+    with Session(app.state.engine) as db:
+        user = db.scalar(select(AppUser).where(AppUser.openid == openid))
+        assert user is not None
+        user.task_credits = credits
+        db.commit()
+
+
 def create_account(client: TestClient, csrf: str, username: str) -> int:
     response = client.post(
         "/api/v1/accounts",
@@ -138,6 +147,7 @@ def test_active_task_quota_blocks_additional_tasks() -> None:
         with client:
             csrf = login_app_user(client, app, "openid-tasks")
             set_quotas(app, "openid-tasks", {"max_accounts": 3, "max_active_tasks": 1})
+            grant_task_credits(app, "openid-tasks")
 
             account = create_account(client, csrf, "chaoxing-1").json()["id"]
             first = create_task(client, csrf, account, "course-1")
@@ -161,6 +171,7 @@ def test_bulk_create_reports_quota_error_code_per_item() -> None:
         with client:
             csrf = login_app_user(client, app, "openid-bulk")
             set_quotas(app, "openid-bulk", {"max_accounts": 3, "max_active_tasks": 1})
+            grant_task_credits(app, "openid-bulk")
 
             account = create_account(client, csrf, "chaoxing-1").json()["id"]
             response = client.post(

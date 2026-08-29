@@ -4,6 +4,7 @@ from chaoxing_app import __version__
 from chaoxing_app.api.accounts import router as accounts_router
 from chaoxing_app.api.app_users import router as app_users_router
 from chaoxing_app.api.auth import router as auth_router
+from chaoxing_app.api.card_keys import router as card_keys_router
 from chaoxing_app.api.courses import router as courses_router
 from chaoxing_app.api.events import router as events_router
 from chaoxing_app.api.integrations import router as integrations_router
@@ -13,6 +14,7 @@ from chaoxing_app.api.tasks import router as tasks_router
 
 router = APIRouter()
 router.include_router(auth_router)
+router.include_router(card_keys_router)
 router.include_router(app_users_router)
 router.include_router(accounts_router)
 router.include_router(courses_router)

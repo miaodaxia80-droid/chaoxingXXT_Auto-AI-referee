@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import {
   Activity,
+  CreditCard,
   Gauge,
   ListTodo,
   LogOut,
@@ -9,10 +10,12 @@ import {
   Sun,
   SunMoon,
   Settings,
+  UserRound,
   Users,
+  UsersRound,
   X,
 } from 'lucide-vue-next'
-import { NButton, NDropdown, NTooltip, useDialog } from 'naive-ui'
+import { NButton, NDropdown, NTag, NTooltip, useDialog } from 'naive-ui'
 import type { DropdownOption } from 'naive-ui'
 import { computed, h, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -27,15 +30,29 @@ const theme = useTheme()
 const dialog = useDialog()
 const mobileOpen = ref(false)
 
-const items = [
-  { name: 'dashboard', label: '概览', icon: Gauge },
+interface NavItem {
+  name: string
+  label: string
+  icon: typeof Gauge
+  adminOnly?: boolean
+}
+
+const allItems: NavItem[] = [
+  { name: 'dashboard', label: '概览', icon: Gauge, adminOnly: true },
+  { name: 'portal', label: '我的账户', icon: UserRound },
   { name: 'accounts', label: '账号', icon: Users },
   { name: 'tasks', label: '任务', icon: ListTodo },
   { name: 'activity', label: '活动', icon: Activity },
-  { name: 'settings', label: '设置', icon: Settings },
+  { name: 'app-users', label: '用户', icon: UsersRound, adminOnly: true },
+  { name: 'card-keys', label: '卡密', icon: CreditCard, adminOnly: true },
+  { name: 'settings', label: '设置', icon: Settings, adminOnly: true },
 ]
 
-const pageTitle = computed(() => items.find((item) => item.name === route.name)?.label ?? '控制台')
+const items = computed(() => allItems.filter((item) => !item.adminOnly || auth.isAdmin))
+
+const pageTitle = computed(
+  () => allItems.find((item) => item.name === route.name)?.label ?? '控制台',
+)
 const themeLabel = computed(() => ({ system: '跟随系统', light: '浅色', dark: '深色' })[theme.preference.value])
 const activeThemeIcon = computed(() => {
   if (theme.preference.value === 'light') return Sun
@@ -103,8 +120,9 @@ function requestLogout() {
 
       <div class="sidebar-footer">
         <div class="admin-identity">
-          <span class="avatar">{{ auth.username.slice(0, 1).toUpperCase() }}</span>
-          <span class="admin-name">{{ auth.username }}</span>
+          <span class="avatar">{{ auth.displayName.slice(0, 1).toUpperCase() }}</span>
+          <span class="admin-name">{{ auth.displayName }}</span>
+          <NTag v-if="auth.isAppUser" size="tiny" :bordered="false" type="info">用户</NTag>
         </div>
         <NTooltip trigger="hover">
           <template #trigger>
