@@ -6,11 +6,24 @@ import {
   NFormItem,
   NInput,
   NInputNumber,
+  NSelect,
   NSwitch,
   NTag,
 } from 'naive-ui'
+import { computed, ref, watch } from 'vue'
 
 import type { AnswerProfile } from '@/api/types'
+
+type TtlUnit = 'minute' | 'hour' | 'day'
+
+const TTL_UNIT_SECONDS: Record<TtlUnit, number> = { minute: 60, hour: 3_600, day: 86_400 }
+const TTL_UNIT_OPTIONS = [
+  { label: '分钟', value: 'minute' },
+  { label: '小时', value: 'hour' },
+  { label: '天', value: 'day' },
+]
+const TTL_MIN_SECONDS = 60
+const TTL_MAX_SECONDS = 2_592_000
 
 const props = withDefaults(
   defineProps<{
@@ -50,8 +63,41 @@ function updateMaxWorkers(value: number | null) {
   if (value !== null) updateField('max_workers', value)
 }
 
+function preferredUnit(seconds: number): TtlUnit {
+  if (seconds % TTL_UNIT_SECONDS.day === 0) return 'day'
+  if (seconds % TTL_UNIT_SECONDS.hour === 0) return 'hour'
+  return 'minute'
+}
+
+const ttlUnit = ref<TtlUnit>(preferredUnit(props.modelValue.cache_ttl_seconds))
+watch(
+  () => props.modelValue.cache_ttl_seconds,
+  (seconds) => {
+    if (seconds % TTL_UNIT_SECONDS[ttlUnit.value] !== 0) ttlUnit.value = preferredUnit(seconds)
+  },
+)
+
+const ttlAmount = computed(() =>
+  Math.round(props.modelValue.cache_ttl_seconds / TTL_UNIT_SECONDS[ttlUnit.value]),
+)
+const ttlBounds = computed(() => ({
+  min: Math.max(1, Math.ceil(TTL_MIN_SECONDS / TTL_UNIT_SECONDS[ttlUnit.value])),
+  max: Math.floor(TTL_MAX_SECONDS / TTL_UNIT_SECONDS[ttlUnit.value]),
+}))
+
 function updateCacheTtl(value: number | null) {
-  if (value !== null) updateField('cache_ttl_seconds', value)
+  if (value === null) return
+  const seconds = value * TTL_UNIT_SECONDS[ttlUnit.value]
+  updateField(
+    'cache_ttl_seconds',
+    Math.min(TTL_MAX_SECONDS, Math.max(TTL_MIN_SECONDS, seconds)),
+  )
+}
+
+function updateTtlUnit(unit: TtlUnit) {
+  const amount = ttlAmount.value
+  ttlUnit.value = unit
+  updateCacheTtl(amount)
 }
 </script>
 
@@ -132,17 +178,25 @@ function updateCacheTtl(value: number | null) {
     </div>
     <div v-if="modelValue.cache_enabled" class="profile-fields cache-fields">
       <NFormItem label="缓存有效期">
-        <NInputNumber
-          :value="modelValue.cache_ttl_seconds"
-          :disabled="disabled"
-          :min="60"
-          :max="2592000"
-          :step="3600"
-          :precision="0"
-          @update:value="updateCacheTtl"
-        >
-          <template #suffix>秒</template>
-        </NInputNumber>
+        <div class="ttl-control">
+          <NInputNumber
+            :value="ttlAmount"
+            :disabled="disabled"
+            :min="ttlBounds.min"
+            :max="ttlBounds.max"
+            :precision="0"
+            aria-label="缓存有效期"
+            @update:value="updateCacheTtl"
+          />
+          <NSelect
+            class="ttl-unit"
+            :value="ttlUnit"
+            :options="TTL_UNIT_OPTIONS"
+            :disabled="disabled"
+            aria-label="缓存有效期单位"
+            @update:value="updateTtlUnit"
+          />
+        </div>
       </NFormItem>
     </div>
 
@@ -201,7 +255,7 @@ function updateCacheTtl(value: number | null) {
   width: 34px;
   height: 34px;
   place-items: center;
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   background: var(--color-accent-muted);
   color: var(--color-accent);
 }
@@ -217,14 +271,15 @@ function updateCacheTtl(value: number | null) {
 .profile-heading > div > strong,
 .profile-copy > strong {
   color: var(--color-text-strong);
-  font-size: 13px;
+  font-size: var(--fs-md);
+  font-weight: 600;
 }
 
 .profile-heading > div > span,
 .profile-copy > span {
   margin-top: 3px;
   color: var(--color-text-muted);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   line-height: 1.5;
 }
 
@@ -254,7 +309,7 @@ function updateCacheTtl(value: number | null) {
   gap: 14px;
   border-bottom: 1px solid var(--color-border-soft);
   background: var(--color-surface-muted);
-  padding: 14px 20px 0 68px;
+  padding: 14px 20px 0 20px;
 }
 
 .profile-fields :deep(.n-input-number),
@@ -268,8 +323,18 @@ function updateCacheTtl(value: number | null) {
 }
 
 .cache-fields {
-  grid-template-columns: minmax(180px, 280px);
-  justify-content: end;
+  grid-template-columns: minmax(220px, 320px);
+}
+
+.ttl-control {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 96px;
+  width: 100%;
+  gap: 8px;
+}
+
+.ttl-unit {
+  width: 96px;
 }
 
 .search-disclosure {
@@ -278,7 +343,7 @@ function updateCacheTtl(value: number | null) {
 
 .compact {
   border: 1px solid var(--color-border);
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   overflow: hidden;
 }
 

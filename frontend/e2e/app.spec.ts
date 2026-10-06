@@ -96,7 +96,7 @@ async function mockApi(page: Page, initial: MockApiOptions = {}): Promise<ApiSta
         route,
         state.authenticated ? 200 : 401,
         state.authenticated
-          ? { username: 'admin', csrf_token: 'e2e-csrf' }
+          ? { username: 'admin', csrf_token: 'e2e-csrf', kind: 'admin', user: null }
           : { detail: 'not authenticated' },
       )
       return
@@ -212,6 +212,39 @@ async function mockApi(page: Page, initial: MockApiOptions = {}): Promise<ApiSta
       return
     }
     if (path === '/settings/integrations/notifications') {
+      await json(route, 200, [])
+      return
+    }
+    if (path === '/settings/answer-public') {
+      await json(route, 200, { provider: 'yanxi', profile: null })
+      return
+    }
+    if (path === '/cards/me') {
+      await json(route, 200, { plan_expires_at: null, task_credits: 0, active: false })
+      return
+    }
+    const taskDetailMatch = path.match(/^\/tasks\/([^/]+)$/)
+    if (taskDetailMatch && method === 'GET') {
+      const found = (initial.tasks ?? []).find((task) => task.id === taskDetailMatch[1])
+      await json(
+        route,
+        found ? 200 : 404,
+        found ? { ...found, chapters: [] } : { detail: 'task not found' },
+      )
+      return
+    }
+    const taskEventsMatch = path.match(/^\/tasks\/([^/]+)\/events$/)
+    if (taskEventsMatch && method === 'GET') {
+      const taskId = taskEventsMatch[1]
+      await json(
+        route,
+        200,
+        (initial.events ?? []).filter((event) => event.task_id === taskId),
+      )
+      return
+    }
+    const discoverMatch = path.match(/^\/accounts\/\d+\/courses\/discover$/)
+    if (discoverMatch && method === 'POST') {
       await json(route, 200, [])
       return
     }
@@ -384,8 +417,8 @@ test('existing administrator can log in', async ({ page }) => {
   await mockApi(page)
   await page.goto('/auth')
 
-  await expect(page.getByRole('heading', { name: '管理员登录' })).toBeVisible()
-  await page.getByLabel('管理员账号').fill('admin')
+  await expect(page.getByRole('heading', { name: '登录', exact: true })).toBeVisible()
+  await page.getByLabel('账号').fill('admin')
   await page.getByLabel('密码').fill('correct-horse-battery-staple')
   await page.getByRole('button', { name: '登录' }).click()
   await expect(page.getByRole('heading', { name: '概览' })).toBeVisible()
@@ -509,8 +542,8 @@ test('activity groups a task run, preserves its outcome, and exposes technical d
   await expect(group.getByText('task.worker_completed', { exact: true })).toBeVisible()
   await expect(group.getByText('platform_response_invalid', { exact: true })).toBeVisible()
 
-  await group.getByRole('button', { name: '前往任务' }).click()
-  await expect(page).toHaveURL('/tasks')
+  await group.getByRole('button', { name: '查看任务详情' }).click()
+  await expect(page).toHaveURL('/tasks/task-activity-1')
 })
 
 test('activity result filters keep standalone system records separate', async ({ page }) => {
@@ -588,14 +621,12 @@ test('activity result filters keep standalone system records separate', async ({
   await expect(page.getByTestId('activity-group')).toHaveCount(3)
 
   const filter = page.getByLabel('按活动状态筛选')
-  await filter.click()
-  await page.locator('.n-base-select-option').filter({ hasText: '已完成' }).click()
+  await filter.getByRole('tab', { name: '已完成' }).click()
   await expect(page.getByTestId('activity-group')).toHaveCount(1)
   await expect(page.getByTestId('activity-group')).toContainText('任务已完成')
   await expect(page.getByTestId('activity-group')).toContainText(succeededTask.course_title)
 
-  await filter.click()
-  await page.locator('.n-base-select-option').filter({ hasText: '系统记录' }).click()
+  await filter.getByRole('tab', { name: '系统记录' }).click()
   await expect(page.getByTestId('activity-group')).toHaveCount(2)
 
   const failedNotification = page
@@ -642,17 +673,36 @@ test('account credential forms opt out of saved administrator autofill', async (
 })
 
 test('icons and step markers stay centered in their visual containers', async ({ page }) => {
-  await mockApi(page, { authenticated: true })
+  await mockApi(page, {
+    authenticated: true,
+    accounts: [
+      {
+        id: 1,
+        remark: '主账号',
+        username_hint: '138****0000',
+        enabled: true,
+        user_agent: 'e2e',
+        speed: 1,
+        chapter_concurrency: 1,
+        unopened_policy: 'retry',
+        has_password: true,
+        has_cookies: true,
+        answer_profile_override: null,
+      },
+    ],
+  })
 
   await page.goto('/')
   await expect(page.locator('.metric-icon')).toHaveCount(4)
   await expectCenteredContent(page, '.metric-icon', 'svg')
 
   await page.goto('/settings')
-  await expect(page.locator('.profile-icon')).toBeVisible()
+  await page.getByRole('button', { name: '答案服务' }).click()
+  await expect(page.locator('.profile-icon').first()).toBeVisible()
   await expectCenteredContent(page, '.profile-icon', 'svg')
 
   await page.goto('/tasks')
+  await page.getByRole('button', { name: '新建任务' }).click()
   await expect(page.locator('.step-index')).toHaveCount(3)
   await expectCenteredContent(page, '.step-index')
 })
@@ -760,4 +810,19 @@ test('theme choice persists and system mode follows the OS preference', async ({
   await page.getByText('跟随系统', { exact: true }).click()
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark')
   await expect.poll(() => page.evaluate(() => localStorage.getItem('cx.theme'))).toBe('system')
+})
+
+test('settings sections render again when revisited with cached data', async ({ page }) => {
+  const pageErrors: string[] = []
+  page.on('pageerror', (error) => pageErrors.push(error.message))
+  await mockApi(page, { authenticated: true })
+
+  await page.goto('/settings')
+  await expect(page.getByRole('switch', { name: '后台任务' })).toBeVisible()
+  await page.getByRole('button', { name: '概览', exact: true }).click()
+  await expect(page.getByRole('heading', { name: '概览' })).toBeVisible()
+  await page.getByRole('button', { name: '设置', exact: true }).click()
+
+  await expect(page.getByRole('switch', { name: '后台任务' })).toBeVisible()
+  expect(pageErrors).toEqual([])
 })

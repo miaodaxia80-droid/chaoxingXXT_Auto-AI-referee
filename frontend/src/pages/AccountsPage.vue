@@ -5,12 +5,16 @@ import {
   FileSpreadsheet,
   KeyRound,
   Pencil,
+  Play,
   Plus,
   RefreshCw,
   Save,
+  Search,
+  SearchX,
   ShieldCheck,
   Trash2,
   Upload,
+  Users,
 } from 'lucide-vue-next'
 import {
   NAlert,
@@ -25,18 +29,20 @@ import {
   NRadioButton,
   NRadioGroup,
   NSelect,
+  NSkeleton,
   NSwitch,
   NTag,
-  NTooltip,
   useDialog,
   useMessage,
 } from 'naive-ui'
 import type { DataTableColumns } from 'naive-ui'
 import { computed, h, reactive, ref, watch } from 'vue'
-import type { Component } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 
 import { ApiError, apiRequest, getAnswerIntegration } from '@/api/client'
 import AnswerProfileFields from '@/components/settings/AnswerProfileFields.vue'
+import EmptyState from '@/components/ui/EmptyState.vue'
+import IconAction from '@/components/ui/IconAction.vue'
 import {
   cloneAnswerProfile,
   completeAnswerProfile,
@@ -47,10 +53,12 @@ import type {
   Account,
   AccountImportResult,
   AccountImportRow,
+  AnswerIntegration,
   AnswerProfile,
   CreateAccountInput,
   UpdateAccountInput,
 } from '@/api/types'
+import { useAuthStore } from '@/stores/auth'
 
 type AnswerProfileMode = 'inherit' | 'override'
 
@@ -70,9 +78,20 @@ interface EditAccountForm {
   answer_profile: AnswerProfile
 }
 
+type LoginMethod = 'password' | 'cookie'
+
+const UNOPENED_OPTIONS = [
+  { label: '稍后重试', value: 'retry' },
+  { label: '跳过并标记', value: 'skip' },
+]
+
 const queryClient = useQueryClient()
 const message = useMessage()
 const dialog = useDialog()
+const route = useRoute()
+const router = useRouter()
+const search = ref('')
+const createLoginMethod = ref<LoginMethod>('password')
 const showCreate = ref(false)
 const showEdit = ref(false)
 const showImport = ref(false)
@@ -114,10 +133,52 @@ const accounts = useQuery({
   queryFn: () => apiRequest<Account[]>('/accounts'),
 })
 
-const answerIntegration = useQuery({
-  queryKey: ['integration-settings', 'answer'],
-  queryFn: getAnswerIntegration,
+const auth = useAuthStore()
+const answerIntegration = useQuery<Pick<AnswerIntegration, 'provider' | 'profile'>>({
+  queryKey: computed(() =>
+    auth.isAdmin ? ['integration-settings', 'answer'] : ['integration-settings', 'answer-public'],
+  ),
+  queryFn: () =>
+    auth.isAdmin
+      ? getAnswerIntegration()
+      : apiRequest<Pick<AnswerIntegration, 'provider' | 'profile'>>('/settings/answer-public'),
 })
+
+const filteredAccounts = computed(() => {
+  const keyword = search.value.trim().toLocaleLowerCase()
+  const list = accounts.data.value ?? []
+  if (!keyword) return list
+  return list.filter((account) =>
+    [account.remark, account.username_hint].some((value) =>
+      value.toLocaleLowerCase().includes(keyword),
+    ),
+  )
+})
+const enabledCount = computed(
+  () => (accounts.data.value ?? []).filter((account) => account.enabled).length,
+)
+
+watch(
+  () => route.query.create,
+  (value) => {
+    if (value !== '1') return
+    showCreate.value = true
+    const { create: _create, ...rest } = route.query
+    void router.replace({ query: rest })
+  },
+  { immediate: true },
+)
+
+function createTaskFor(account: Account): void {
+  void router.push({ name: 'tasks', query: { create: '1', account: String(account.id) } })
+}
+
+function credentialLabel(account: Account): string {
+  if (account.has_password && account.has_cookies) return '密码 + Cookie'
+  if (account.has_password) return '密码'
+  if (account.has_cookies) return 'Cookie'
+  return '未保存凭据'
+}
 
 const globalAnswerProfile = computed(() =>
   completeAnswerProfile(answerIntegration.data.value?.profile),
@@ -214,94 +275,91 @@ const importAccounts = useMutation({
   },
 })
 
-function iconButton(
-  label: string,
-  icon: Component,
-  onClick: () => void,
-  options?: { danger?: boolean; loading?: boolean; disabled?: boolean },
-) {
-  return h(
-    NTooltip,
-    null,
-    {
-      trigger: () =>
-        h(
-          NButton,
-          {
-            quaternary: true,
-            circle: true,
-            size: 'small',
-            type: options?.danger ? 'error' : 'default',
-            loading: options?.loading,
-            disabled: options?.disabled,
-            'aria-label': label,
-            onClick,
-          },
-          { icon: () => h(icon, { size: 16 }) },
-        ),
-      default: () => label,
-    },
-  )
+function isToggling(account: Account): boolean {
+  return toggleAccount.isPending.value && toggleAccount.variables.value?.id === account.id
+}
+
+function isDeleting(account: Account): boolean {
+  return deleteAccount.isPending.value && deleteAccount.variables.value === account.id
+}
+
+function renderActions(row: Account) {
+  return h('div', { class: 'cell-actions' }, [
+    h(IconAction, {
+      label: '为该账号创建任务',
+      icon: Play,
+      disabled: !row.enabled,
+      onClick: () => createTaskFor(row),
+    }),
+    h(IconAction, { label: '编辑账号', icon: Pencil, onClick: () => openEdit(row) }),
+    h(IconAction, {
+      label: '删除账号',
+      icon: Trash2,
+      danger: true,
+      loading: isDeleting(row),
+      disabled: isDeleting(row),
+      onClick: () => requestDelete(row),
+    }),
+  ])
+}
+
+function renderStatus(row: Account) {
+  const loading = isToggling(row)
+  return h('div', { class: 'account-status-control' }, [
+    h(NSwitch, {
+      value: row.enabled,
+      size: 'small',
+      loading,
+      disabled: loading,
+      'aria-label': row.enabled ? '停用账号' : '启用账号',
+      onUpdateValue: (enabled: boolean) => toggleAccount.mutate({ id: row.id, enabled }),
+    }),
+    h('span', row.enabled ? '启用' : '停用'),
+  ])
 }
 
 const columns: DataTableColumns<Account> = [
   {
     title: '账号',
     key: 'username_hint',
+    minWidth: 200,
     render: (row) =>
-      h('div', { class: 'account-cell' }, [
+      h('div', { class: 'cell-stack' }, [
         h('strong', row.remark || row.username_hint),
-        row.remark ? h('span', row.username_hint) : null,
+        h('span', row.remark ? row.username_hint : '未设置备注'),
       ]),
   },
   {
-    title: '凭据',
+    title: '登录方式',
     key: 'credentials',
+    width: 150,
     render: (row) =>
-      h('div', { class: 'tag-row' }, [
-        row.has_password ? h(NTag, { size: 'small' }, { default: () => '密码' }) : null,
-        row.has_cookies ? h(NTag, { size: 'small' }, { default: () => 'Cookie' }) : null,
-      ]),
-  },
-  { title: '倍速', key: 'speed', render: (row) => `${row.speed.toFixed(1)}x` },
-  { title: '章节并发', key: 'chapter_concurrency' },
-  {
-    title: '状态',
-    key: 'enabled',
-    width: 112,
-    render: (row) => {
-      const loading =
-        toggleAccount.isPending.value && toggleAccount.variables.value?.id === row.id
-      return h('div', { class: 'account-status-control' }, [
-        h(NSwitch, {
-          value: row.enabled,
+      h(
+        NTag,
+        {
           size: 'small',
-          loading,
-          disabled: loading,
-          'aria-label': row.enabled ? '停用账号' : '启用账号',
-          onUpdateValue: (enabled: boolean) => toggleAccount.mutate({ id: row.id, enabled }),
-        }),
-        h('span', row.enabled ? '启用' : '停用'),
-      ])
-    },
+          bordered: false,
+          type: row.has_password || row.has_cookies ? 'default' : 'warning',
+        },
+        { default: () => credentialLabel(row) },
+      ),
   },
   {
-    title: '操作',
-    key: 'actions',
-    width: 96,
-    render: (row) => {
-      const deleting =
-        deleteAccount.isPending.value && deleteAccount.variables.value === row.id
-      return h('div', { class: 'account-actions' }, [
-        iconButton('编辑账号', Pencil, () => openEdit(row)),
-        iconButton('删除账号', Trash2, () => requestDelete(row), {
-          danger: true,
-          loading: deleting,
-          disabled: deleting,
-        }),
-      ])
-    },
+    title: '倍速',
+    key: 'speed',
+    width: 80,
+    render: (row) => h('span', { class: 'num' }, `${row.speed.toFixed(1)}x`),
   },
+  { title: '章节并发', key: 'chapter_concurrency', width: 96 },
+  {
+    title: '未开放章节',
+    key: 'unopened_policy',
+    width: 110,
+    render: (row) =>
+      h('span', { class: 'cell-muted' }, row.unopened_policy === 'retry' ? '稍后重试' : '跳过'),
+  },
+  { title: '状态', key: 'enabled', width: 108, render: renderStatus },
+  { title: '操作', key: 'actions', width: 124, render: renderActions },
 ]
 
 const importColumns: DataTableColumns<AccountImportRow> = [
@@ -337,6 +395,7 @@ function resetCreateForm() {
     chapter_concurrency: 1,
     unopened_policy: 'retry',
   })
+  createLoginMethod.value = 'password'
 }
 
 function resetEditForm() {
@@ -472,7 +531,16 @@ function submitCreate() {
     message.warning('请输入学习通账号')
     return
   }
-  createAccount.mutate({ ...createForm })
+  const usePassword = createLoginMethod.value === 'password'
+  if (usePassword ? !createForm.password : !createForm.cookies?.trim()) {
+    message.warning(usePassword ? '请输入学习通密码' : '请粘贴 Cookie')
+    return
+  }
+  createAccount.mutate({
+    ...createForm,
+    password: usePassword ? createForm.password : '',
+    cookies: usePassword ? '' : (createForm.cookies ?? '').trim(),
+  })
 }
 
 function submitEdit() {
@@ -527,29 +595,109 @@ function requestDelete(account: Account) {
 
 <template>
   <section class="content-section flush">
-    <div class="section-heading padded">
-      <div><h2>学习通账号</h2><p>凭据已加密保存，列表仅显示脱敏账号</p></div>
-      <div class="heading-actions">
-        <NButton quaternary circle title="刷新" @click="accounts.refetch()">
-          <template #icon><RefreshCw /></template>
-        </NButton>
-        <NButton @click="showImport = true">
-          <template #icon><Upload /></template>
-          导入
-        </NButton>
-        <NButton type="primary" @click="showCreate = true">
-          <template #icon><Plus /></template>
-          添加账号
-        </NButton>
-      </div>
+    <div class="list-toolbar">
+      <NInput
+        v-model:value="search"
+        class="toolbar-search"
+        clearable
+        placeholder="搜索备注或账号"
+        :disabled="!accounts.data.value?.length"
+        :input-props="{ 'aria-label': '搜索账号' }"
+      >
+        <template #prefix><Search :size="16" /></template>
+      </NInput>
+      <span v-if="accounts.data.value?.length" class="list-count">
+        共 {{ accounts.data.value.length }} 个 · {{ enabledCount }} 个启用
+      </span>
+      <span class="toolbar-spacer" />
+      <IconAction
+        label="刷新账号"
+        :icon="RefreshCw"
+        size="medium"
+        :loading="accounts.isFetching.value"
+        @click="accounts.refetch()"
+      />
+      <NButton @click="showImport = true">
+        <template #icon><Upload /></template>
+        批量导入
+      </NButton>
+      <NButton type="primary" @click="showCreate = true">
+        <template #icon><Plus /></template>
+        添加账号
+      </NButton>
     </div>
-    <NDataTable
-      :columns="columns"
-      :data="accounts.data.value ?? []"
-      :loading="accounts.isLoading.value"
-      :bordered="false"
-      :row-key="(row: Account) => row.id"
-    />
+
+    <NAlert v-if="accounts.isError.value" type="error" :bordered="false">
+      账号列表加载失败，请稍后重试。
+    </NAlert>
+    <div v-else-if="accounts.isLoading.value" class="list-skeleton">
+      <NSkeleton v-for="index in 3" :key="index" text :height="44" />
+    </div>
+    <EmptyState
+      v-else-if="!accounts.data.value?.length"
+      :icon="Users"
+      title="还没有学习通账号"
+      description="添加账号后即可读取课程并创建学习任务。也可以通过 CSV 一次导入多个账号。"
+    >
+      <NButton type="primary" @click="showCreate = true">
+        <template #icon><Plus /></template>
+        添加账号
+      </NButton>
+      <NButton @click="showImport = true">批量导入</NButton>
+    </EmptyState>
+    <EmptyState
+      v-else-if="filteredAccounts.length === 0"
+      :icon="SearchX"
+      title="没有匹配的账号"
+    >
+      <NButton size="small" @click="search = ''">清除搜索</NButton>
+    </EmptyState>
+    <template v-else>
+      <NDataTable
+        class="desktop-only"
+        :columns="columns"
+        :data="filteredAccounts"
+        :bordered="false"
+        :row-key="(row: Account) => row.id"
+        :scroll-x="820"
+      />
+      <div class="mobile-card-list mobile-only">
+        <article v-for="account in filteredAccounts" :key="account.id" class="mobile-card">
+          <div class="mobile-card-head">
+            <div class="cell-stack">
+              <strong>{{ account.remark || account.username_hint }}</strong>
+              <span>{{ account.remark ? account.username_hint : '未设置备注' }}</span>
+            </div>
+            <NSwitch
+              :value="account.enabled"
+              size="small"
+              :loading="isToggling(account)"
+              :aria-label="account.enabled ? '停用账号' : '启用账号'"
+              @update:value="(enabled: boolean) => toggleAccount.mutate({ id: account.id, enabled })"
+            />
+          </div>
+          <div class="mobile-card-meta">
+            <span>{{ credentialLabel(account) }}</span>
+            <span class="num">{{ account.speed.toFixed(1) }}x 倍速</span>
+            <span>并发 {{ account.chapter_concurrency }}</span>
+          </div>
+          <div class="mobile-card-actions">
+            <NButton size="small" :disabled="!account.enabled" @click="createTaskFor(account)">
+              <template #icon><Play :size="14" /></template>
+              创建任务
+            </NButton>
+            <IconAction label="编辑账号" :icon="Pencil" @click="openEdit(account)" />
+            <IconAction
+              label="删除账号"
+              :icon="Trash2"
+              danger
+              :loading="isDeleting(account)"
+              @click="requestDelete(account)"
+            />
+          </div>
+        </article>
+      </div>
+    </template>
   </section>
 
   <NModal
@@ -637,39 +785,47 @@ function requestDelete(account: Account) {
           />
         </NFormItem>
       </div>
-      <NFormItem label="密码">
+      <NFormItem label="登录方式">
+        <NRadioGroup v-model:value="createLoginMethod" name="cx-create-login-method">
+          <NRadioButton value="password">账号密码</NRadioButton>
+          <NRadioButton value="cookie">Cookie</NRadioButton>
+        </NRadioGroup>
+      </NFormItem>
+      <NFormItem v-show="createLoginMethod === 'password'" label="密码">
         <NInput
           v-model:value="createForm.password"
           type="password"
           show-password-on="click"
           :input-props="{ name: 'cx-create-password', autocomplete: 'new-password' }"
-          placeholder="使用 Cookie 登录时可留空"
+          placeholder="学习通登录密码"
         />
       </NFormItem>
-      <NFormItem label="Cookie">
+      <NFormItem v-show="createLoginMethod === 'cookie'" label="Cookie">
         <NInput
           v-model:value="createForm.cookies"
           type="textarea"
-          :autosize="{ minRows: 2, maxRows: 4 }"
+          :autosize="{ minRows: 3, maxRows: 5 }"
           :input-props="{ name: 'cx-create-cookie', autocomplete: 'off' }"
-          placeholder="可选，登录成功后会自动更新"
+          placeholder="从已登录的浏览器复制完整 Cookie，执行任务时会自动续期"
         />
       </NFormItem>
       <div class="form-grid three">
         <NFormItem label="视频倍速">
-          <NInputNumber v-model:value="createForm.speed" :min="1" :max="2" :step="0.1" />
+          <NInputNumber
+            v-model:value="createForm.speed"
+            :min="1"
+            :max="2"
+            :step="0.1"
+            :precision="1"
+          >
+            <template #suffix>x</template>
+          </NInputNumber>
         </NFormItem>
         <NFormItem label="章节并发">
-          <NInputNumber v-model:value="createForm.chapter_concurrency" :min="1" :max="8" />
+          <NInputNumber v-model:value="createForm.chapter_concurrency" :min="1" :max="8" :precision="0" />
         </NFormItem>
         <NFormItem label="未开放章节">
-          <NSelect
-            v-model:value="createForm.unopened_policy"
-            :options="[
-              { label: '稍后重试', value: 'retry' },
-              { label: '跳过并标记', value: 'skip' },
-            ]"
-          />
+          <NSelect v-model:value="createForm.unopened_policy" :options="UNOPENED_OPTIONS" />
         </NFormItem>
       </div>
       <div class="security-note">
@@ -768,23 +924,26 @@ function requestDelete(account: Account) {
       </NFormItem>
       <div class="form-grid three">
         <NFormItem label="视频倍速">
-          <NInputNumber v-model:value="editForm.speed" :min="1" :max="2" :step="0.1" />
+          <NInputNumber
+            v-model:value="editForm.speed"
+            :min="1"
+            :max="2"
+            :step="0.1"
+            :precision="1"
+          >
+            <template #suffix>x</template>
+          </NInputNumber>
         </NFormItem>
         <NFormItem label="章节并发">
           <NInputNumber
             v-model:value="editForm.chapter_concurrency"
             :min="1"
             :max="8"
+            :precision="0"
           />
         </NFormItem>
         <NFormItem label="未开放章节">
-          <NSelect
-            v-model:value="editForm.unopened_policy"
-            :options="[
-              { label: '稍后重试', value: 'retry' },
-              { label: '跳过并标记', value: 'skip' },
-            ]"
-          />
+          <NSelect v-model:value="editForm.unopened_policy" :options="UNOPENED_OPTIONS" />
         </NFormItem>
       </div>
       <section class="answer-profile-setting">

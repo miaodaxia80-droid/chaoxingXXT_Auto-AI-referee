@@ -245,6 +245,13 @@ export interface UpdateAnswerIntegrationInput {
   profile?: AnswerProfile
 }
 
+export interface IntegrationTestResult {
+  ok: boolean
+  reason: string
+  answer: string | null
+  latency_ms: number
+}
+
 export type NotificationChannelKind = 'server_chan' | 'qmsg' | 'bark' | 'telegram'
 
 export interface NotificationIntegration {

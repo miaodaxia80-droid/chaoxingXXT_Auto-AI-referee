@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { KeyRound, Plus, UsersRound } from 'lucide-vue-next'
+import { Pencil, Plus, UsersRound } from 'lucide-vue-next'
 import {
   NAlert,
   NButton,
@@ -20,6 +20,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/vue-query'
 
 import { ApiError, apiRequest } from '@/api/client'
 import type { AppUserAdmin, CreateAppUserInput, UpdateAppUserInput } from '@/api/types'
+import EmptyState from '@/components/ui/EmptyState.vue'
+import IconAction from '@/components/ui/IconAction.vue'
 
 const message = useMessage()
 const dialog = useDialog()
@@ -127,6 +129,7 @@ function submitEdit(): void {
 }
 
 // --- 启停 ---
+const togglingId = ref<number | null>(null)
 const toggleMutation = useMutation({
   mutationFn: ({ id, disabled }: { id: number; disabled: boolean }) =>
     apiRequest<AppUserAdmin>(`/app-users/${id}`, {
@@ -139,6 +142,9 @@ const toggleMutation = useMutation({
   },
   onError: (error) =>
     message.error(error instanceof ApiError ? error.message : '操作失败，请稍后重试'),
+  onSettled: () => {
+    togglingId.value = null
+  },
 })
 
 function requestToggle(user: AppUserAdmin): void {
@@ -149,10 +155,14 @@ function requestToggle(user: AppUserAdmin): void {
       positiveText: '禁用',
       negativeText: '取消',
       positiveButtonProps: { type: 'error' },
-      onPositiveClick: () => toggleMutation.mutate({ id: user.id, disabled: true }),
+      onPositiveClick: () => {
+        togglingId.value = user.id
+        toggleMutation.mutate({ id: user.id, disabled: true })
+      },
     })
     return
   }
+  togglingId.value = user.id
   toggleMutation.mutate({ id: user.id, disabled: false })
 }
 
@@ -162,9 +172,9 @@ const columns = computed<DataTableColumns<AppUserAdmin>>(() => [
     title: '用户',
     key: 'username',
     render: (user) =>
-      h('div', { style: 'display:flex;flex-direction:column;gap:2px' }, [
+      h('div', { class: 'user-cell' }, [
         h('strong', null, user.nickname),
-        h('span', { style: 'font-size:12px;opacity:.6' }, user.username ?? user.openid),
+        h('span', { class: 'user-sub' }, user.username ?? user.openid),
       ]),
   },
   {
@@ -175,7 +185,7 @@ const columns = computed<DataTableColumns<AppUserAdmin>>(() => [
       h(NSwitch, {
         value: !user.disabled,
         size: 'small',
-        loading: toggleMutation.isPending.value,
+        loading: togglingId.value === user.id,
         'onUpdate:value': () => requestToggle(user),
       }),
   },
@@ -189,7 +199,7 @@ const columns = computed<DataTableColumns<AppUserAdmin>>(() => [
     title: '剩余次数',
     key: 'task_credits',
     width: 90,
-    render: (user) => h('span', { style: 'font-variant-numeric:tabular-nums' }, String(user.task_credits)),
+    render: (user) => h('span', { class: 'tabular' }, String(user.task_credits)),
   },
   { title: '账号/任务', key: 'usage', width: 100, render: (user) => `${user.account_count} / ${user.active_task_count}` },
   {
@@ -201,13 +211,13 @@ const columns = computed<DataTableColumns<AppUserAdmin>>(() => [
   {
     title: '',
     key: 'actions',
-    width: 70,
+    width: 56,
     render: (user) =>
-      h(
-        NButton,
-        { size: 'small', quaternary: true, onClick: () => openEdit(user) },
-        { icon: () => h(KeyRound, { size: 15 }) },
-      ),
+      h(IconAction, {
+        label: '编辑用户',
+        icon: Pencil,
+        onClick: () => openEdit(user),
+      }),
   },
 ])
 
@@ -235,11 +245,17 @@ const isEmpty = computed(
       {{ usersQuery.error.value instanceof ApiError ? usersQuery.error.value.message : '加载失败' }}
     </NAlert>
 
-    <div v-if="isEmpty" class="empty-state">
-      <UsersRound :size="28" />
-      <strong>还没有普通用户</strong>
-      <span>点击右上角「新建用户」创建第一个账号</span>
-    </div>
+    <EmptyState
+      v-else-if="isEmpty"
+      :icon="UsersRound"
+      title="还没有普通用户"
+      description="创建的用户可以登录小程序/网页并绑定自己的学习通账号"
+    >
+      <NButton type="primary" @click="showCreate = true">
+        <template #icon><Plus :size="16" /></template>
+        新建用户
+      </NButton>
+    </EmptyState>
 
     <NDataTable
       v-else
@@ -247,19 +263,34 @@ const isEmpty = computed(
       :data="usersQuery.data.value ?? []"
       :loading="usersQuery.isLoading.value"
       :bordered="false"
+      :scroll-x="760"
       :row-key="(row: AppUserAdmin) => row.id"
     />
 
     <NModal v-model:show="showCreate" preset="card" title="新建用户" class="form-modal" @after-leave="createForm = { username: '', password: '', nickname: '' }">
-      <NForm label-placement="top">
+      <NForm label-placement="top" autocomplete="off">
         <NFormItem label="用户名（3-80 位，字母数字 _. -）">
-          <NInput v-model:value="createForm.username" placeholder="student01" />
+          <NInput
+            v-model:value="createForm.username"
+            placeholder="student01"
+            :input-props="{ name: 'app-user-username', autocomplete: 'off' }"
+          />
         </NFormItem>
         <NFormItem label="初始密码（至少 8 位）">
-          <NInput v-model:value="createForm.password" type="password" show-password-on="click" placeholder="8-256 位可见字符" />
+          <NInput
+            v-model:value="createForm.password"
+            type="password"
+            show-password-on="click"
+            placeholder="8-256 位可见字符"
+            :input-props="{ name: 'app-user-password', autocomplete: 'new-password' }"
+          />
         </NFormItem>
         <NFormItem label="昵称（可选，默认同用户名）">
-          <NInput v-model:value="createForm.nickname" placeholder="张同学" />
+          <NInput
+            v-model:value="createForm.nickname"
+            placeholder="张同学"
+            :input-props="{ name: 'app-user-nickname', autocomplete: 'off' }"
+          />
         </NFormItem>
         <div class="modal-actions">
           <NButton @click="showCreate = false">取消</NButton>
@@ -271,19 +302,28 @@ const isEmpty = computed(
     </NModal>
 
     <NModal v-model:show="showEdit" preset="card" title="编辑用户" class="form-modal" @after-leave="editing = null">
-      <NForm label-placement="top">
+      <NForm label-placement="top" autocomplete="off">
         <NFormItem label="昵称">
-          <NInput v-model:value="editForm.nickname" />
+          <NInput
+            v-model:value="editForm.nickname"
+            :input-props="{ name: 'edit-user-nickname', autocomplete: 'off' }"
+          />
         </NFormItem>
         <NFormItem label="重置密码（可选，重置后该用户所有会话失效）">
-          <NInput v-model:value="editForm.newPassword" type="password" show-password-on="click" placeholder="留空表示不修改" />
+          <NInput
+            v-model:value="editForm.newPassword"
+            type="password"
+            show-password-on="click"
+            placeholder="留空表示不修改"
+            :input-props="{ name: 'edit-user-password', autocomplete: 'new-password' }"
+          />
         </NFormItem>
         <div class="edit-grid">
           <NFormItem label="时间卡延长（天）">
-            <NInputNumber v-model:value="editForm.planExtendDays" :min="0" :max="3650" style="width: 100%" />
+            <NInputNumber v-model:value="editForm.planExtendDays" :min="0" :max="3650" />
           </NFormItem>
           <NFormItem label="次数增减（负数为扣减）">
-            <NInputNumber v-model:value="editForm.creditsAdd" :min="-100000" :max="100000" style="width: 100%" />
+            <NInputNumber v-model:value="editForm.creditsAdd" :min="-100000" :max="100000" />
           </NFormItem>
         </div>
         <div v-if="editing" class="edit-summary">
@@ -306,10 +346,29 @@ const isEmpty = computed(
   margin: 0 16px;
 }
 
+.user-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.user-sub {
+  color: var(--color-text-faint);
+  font-size: var(--fs-xs);
+}
+
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
 .edit-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 12px;
+}
+
+.edit-grid :deep(.n-input-number) {
+  width: 100%;
 }
 
 .edit-summary {

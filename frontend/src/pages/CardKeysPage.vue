@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Ban, Copy, CreditCard, Plus } from 'lucide-vue-next'
+import { Ban, Copy, CreditCard, Plus, RefreshCw } from 'lucide-vue-next'
 import {
   NAlert,
   NButton,
@@ -25,6 +25,8 @@ import type {
   CardKeyGenerateResponse,
   CardKeyStatus,
 } from '@/api/types'
+import EmptyState from '@/components/ui/EmptyState.vue'
+import IconAction from '@/components/ui/IconAction.vue'
 
 const message = useMessage()
 const dialog = useDialog()
@@ -106,6 +108,7 @@ function statusTag(status: CardKeyStatus) {
   return h(NTag, { size: 'small', type: item.type, bordered: false }, { default: () => item.label })
 }
 
+const revokingId = ref<number | null>(null)
 const revokeMutation = useMutation({
   mutationFn: (id: number) =>
     apiRequest<CardKey>(`/cards/${id}/revoke`, { method: 'POST', body: JSON.stringify({}) }),
@@ -115,6 +118,9 @@ const revokeMutation = useMutation({
   },
   onError: (error) =>
     message.error(error instanceof ApiError ? error.message : '作废失败，请稍后重试'),
+  onSettled: () => {
+    revokingId.value = null
+  },
 })
 
 function requestRevoke(card: CardKey): void {
@@ -124,7 +130,10 @@ function requestRevoke(card: CardKey): void {
     positiveText: '作废',
     negativeText: '取消',
     positiveButtonProps: { type: 'error' },
-    onPositiveClick: () => revokeMutation.mutate(card.id),
+    onPositiveClick: () => {
+      revokingId.value = card.id
+      revokeMutation.mutate(card.id)
+    },
   })
 }
 
@@ -133,8 +142,7 @@ const columns = computed<DataTableColumns<CardKey>>(() => [
   {
     title: '卡密',
     key: 'code_hint',
-    render: (card) =>
-      h('code', { style: 'font-family:var(--font-mono, monospace);font-size:13px' }, card.code_hint),
+    render: (card) => h('code', { class: 'card-code' }, card.code_hint),
   },
   {
     title: '类型',
@@ -149,20 +157,16 @@ const columns = computed<DataTableColumns<CardKey>>(() => [
   {
     title: '',
     key: 'actions',
-    width: 70,
+    width: 56,
     render: (card) =>
       card.status === 'unused'
-        ? h(
-            NButton,
-            {
-              size: 'small',
-              quaternary: true,
-              type: 'error',
-              loading: revokeMutation.isPending.value,
-              onClick: () => requestRevoke(card),
-            },
-            { icon: () => h(Ban, { size: 15 }) },
-          )
+        ? h(IconAction, {
+            label: '作废卡密',
+            icon: Ban,
+            danger: true,
+            loading: revokingId.value === card.id,
+            onClick: () => requestRevoke(card),
+          })
         : null,
   },
 ])
@@ -173,48 +177,56 @@ const filterOptions: { label: string; value: CardKeyStatus | 'all' }[] = [
   { label: '已核销', value: 'used' },
   { label: '已作废', value: 'revoked' },
 ]
+
+const isEmpty = computed(
+  () => !cardsQuery.isLoading.value && (cardsQuery.data.value?.length ?? 0) === 0,
+)
 </script>
 
 <template>
   <section class="content-section flush">
-    <div class="section-heading padded">
-      <div>
-        <h2>卡密管理</h2>
-        <p>批量生成时间卡/次数卡，卡密明文仅在生成时展示一次</p>
-      </div>
-      <div class="heading-actions">
-        <NRadioGroup v-model:value="statusFilter" size="small">
-          <NRadioButton
-            v-for="option in filterOptions"
-            :key="option.value"
-            :value="option.value"
-            :label="option.label"
-          />
-        </NRadioGroup>
-        <NButton
-          quaternary
-          circle
-          aria-label="刷新"
-          @click="queryClient.invalidateQueries({ queryKey: ['card-keys'] })"
+    <div class="list-toolbar">
+      <div class="segmented" role="tablist" aria-label="按卡密状态筛选">
+        <button
+          v-for="option in filterOptions"
+          :key="option.value"
+          type="button"
+          role="tab"
+          :aria-selected="statusFilter === option.value"
+          @click="statusFilter = option.value"
         >
-          <template #icon><CreditCard :size="16" /></template>
-        </NButton>
-        <NButton type="primary" @click="showGenerate = true">
-          <template #icon><Plus :size="16" /></template>
-          生成卡密
-        </NButton>
+          {{ option.label }}
+        </button>
       </div>
+      <span class="toolbar-spacer" />
+      <IconAction
+        label="刷新卡密"
+        :icon="RefreshCw"
+        size="medium"
+        :loading="cardsQuery.isFetching.value"
+        @click="cardsQuery.refetch()"
+      />
+      <NButton type="primary" @click="showGenerate = true">
+        <template #icon><Plus :size="16" /></template>
+        生成卡密
+      </NButton>
     </div>
 
-    <NAlert v-if="cardsQuery.error.value" type="error" :bordered="false" class="padded-alert">
+    <NAlert v-if="cardsQuery.error.value" type="error" :bordered="false">
       {{ cardsQuery.error.value instanceof ApiError ? cardsQuery.error.value.message : '加载失败' }}
     </NAlert>
 
-    <div v-if="!cardsQuery.isLoading.value && (cardsQuery.data.value?.length ?? 0) === 0" class="empty-state">
-      <CreditCard :size="28" />
-      <strong>还没有卡密</strong>
-      <span>点击右上角「生成卡密」创建第一批卡密</span>
-    </div>
+    <EmptyState
+      v-else-if="isEmpty"
+      :icon="CreditCard"
+      title="还没有卡密"
+      description="生成的时间卡/次数卡会出现在这里，明文仅在生成时展示一次"
+    >
+      <NButton type="primary" @click="showGenerate = true">
+        <template #icon><Plus :size="16" /></template>
+        生成卡密
+      </NButton>
+    </EmptyState>
 
     <NDataTable
       v-else
@@ -222,6 +234,7 @@ const filterOptions: { label: string; value: CardKeyStatus | 'all' }[] = [
       :data="cardsQuery.data.value ?? []"
       :loading="cardsQuery.isLoading.value"
       :bordered="false"
+      :scroll-x="860"
       :row-key="(row: CardKey) => row.id"
     />
 
@@ -241,10 +254,10 @@ const filterOptions: { label: string; value: CardKeyStatus | 'all' }[] = [
         </NFormItem>
         <div class="generate-grid">
           <NFormItem :label="generateForm.kind === 'time' ? '面值（天）' : '面值（次数）'">
-            <NInputNumber v-model:value="generateForm.value" :min="1" style="width: 100%" />
+            <NInputNumber v-model:value="generateForm.value" :min="1" />
           </NFormItem>
           <NFormItem label="数量（1-500）">
-            <NInputNumber v-model:value="generateForm.count" :min="1" :max="500" style="width: 100%" />
+            <NInputNumber v-model:value="generateForm.count" :min="1" :max="500" />
           </NFormItem>
         </div>
         <NFormItem label="批次备注（可选）">
@@ -266,7 +279,7 @@ const filterOptions: { label: string; value: CardKeyStatus | 'all' }[] = [
       class="form-modal wide"
       @after-leave="lastBatch = null"
     >
-      <NAlert type="warning" :bordered="false" style="margin-bottom: 12px">
+      <NAlert type="warning" :bordered="false" class="result-alert">
         请立即复制并妥善保存。服务器只存哈希，关闭后无法再次查看明文。
       </NAlert>
       <div class="code-list">
@@ -284,14 +297,19 @@ const filterOptions: { label: string; value: CardKeyStatus | 'all' }[] = [
 </template>
 
 <style scoped>
-.padded-alert {
-  margin: 0 16px;
+.card-code {
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
 }
 
 .generate-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 12px;
+}
+
+.generate-grid :deep(.n-input-number) {
+  width: 100%;
 }
 
 .modal-actions {
@@ -305,6 +323,10 @@ const filterOptions: { label: string; value: CardKeyStatus | 'all' }[] = [
   width: min(560px, calc(100vw - 32px));
 }
 
+.result-alert {
+  margin-bottom: 12px;
+}
+
 .code-list {
   display: flex;
   flex-direction: column;
@@ -312,13 +334,13 @@ const filterOptions: { label: string; value: CardKeyStatus | 'all' }[] = [
   max-height: 320px;
   overflow: auto;
   padding: 12px;
-  border-radius: 10px;
-  background: rgba(128, 128, 128, 0.08);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface-subtle);
 }
 
 .code-list code {
-  font-family: var(--font-mono, monospace);
-  font-size: 13px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
   letter-spacing: 0.5px;
 }
 </style>

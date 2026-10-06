@@ -1,9 +1,7 @@
 <script setup lang="ts">
 import { useMutation, useQuery, useQueryClient } from '@tanstack/vue-query'
 import {
-  Activity,
   Archive,
-  Bell,
   CheckCircle2,
   ChevronDown,
   CircleAlert,
@@ -21,14 +19,11 @@ import {
   NAlert,
   NButton,
   NDatePicker,
-  NEmpty,
   NModal,
-  NSelect,
   NSkeleton,
   NTag,
   useMessage,
 } from 'naive-ui'
-import type { SelectOption } from 'naive-ui'
 import { computed, onBeforeUnmount, ref } from 'vue'
 import type { Component } from 'vue'
 import { useRouter } from 'vue-router'
@@ -36,6 +31,21 @@ import { useRouter } from 'vue-router'
 import { apiRequest, getAllTasks } from '@/api/client'
 import { streamSystemEvents, type EventStreamStatus } from '@/api/events'
 import type { Account, EventArchiveResponse, StudyTask, SystemEvent } from '@/api/types'
+import EmptyState from '@/components/ui/EmptyState.vue'
+import IconAction from '@/components/ui/IconAction.vue'
+import {
+  EVENT_LABELS,
+  REASON_MESSAGES,
+  STATUS_MESSAGES,
+  displayValue,
+  eventTime,
+  payloadEntries,
+} from '@/domain/events'
+import {
+  formatFullDateTime as formatDate,
+  formatRelative as formatRelativeDate,
+  shortIdentifier as formatIdentifier,
+} from '@/utils/format'
 
 type ActivityCategory = 'attention' | 'running' | 'completed' | 'system'
 type ActivityTone = 'danger' | 'warning' | 'success' | 'info' | 'neutral'
@@ -64,11 +74,12 @@ const expandedGroups = ref(new Set<string>())
 let streamController: AbortController | null = null
 let taskRefreshTimer: number | null = null
 
-const categoryOptions: SelectOption[] = [
-  { label: '需要处理', value: 'attention' },
-  { label: '进行中', value: 'running' },
-  { label: '已完成', value: 'completed' },
-  { label: '系统记录', value: 'system' },
+const CATEGORY_TABS: { value: ActivityCategory | null; label: string }[] = [
+  { value: null, label: '全部' },
+  { value: 'attention', label: '需要处理' },
+  { value: 'running', label: '进行中' },
+  { value: 'completed', label: '已完成' },
+  { value: 'system', label: '系统记录' },
 ]
 
 const events = useQuery({
@@ -109,134 +120,6 @@ const accountById = computed(
 const taskById = computed(
   () => new Map((tasks.data.value ?? []).map((task) => [task.id, task])),
 )
-
-const EVENT_LABELS: Record<string, string> = {
-  'task.queued': '任务已加入队列',
-  'task.claimed': '任务开始执行',
-  'task.paused': '任务已暂停',
-  'task.pause_requested': '正在暂停任务',
-  'task.pause_canceled': '任务继续执行',
-  'task.resumed': '任务已恢复',
-  'task.canceled': '任务已取消',
-  'task.cancel_requested': '正在取消任务',
-  'task.recovering': '任务正在恢复',
-  'task.requeued': '任务已重新排队',
-  'task.failed': '任务执行失败',
-  'task.succeeded': '任务已完成',
-  'task.needs_attention': '任务需要处理',
-  'task.run.completed': '本次运行结束',
-  'task.run.released': '本次运行已释放',
-  'task.worker_launch_failed': '执行进程启动失败',
-  'task.worker_failed': '执行进程异常退出',
-  'task.worker_completed': '执行进程结束',
-  'task.lease_expired': '任务运行超时',
-  'chapter.started': '章节开始执行',
-  'chapter.running': '章节执行中',
-  'chapter.succeeded': '章节已完成',
-  'chapter.already_completed': '章节此前已完成',
-  'chapter.failed': '章节执行失败',
-  'chapter.unsubmitted': '章节需要处理',
-  'chapter.skipped_not_open': '章节尚未开放，已跳过',
-  'chapter.canceled': '章节已取消',
-  'chapter.unresolved_task_points': '发现无法识别的任务点',
-  'chapter.unsupported_task_point': '发现暂不支持的任务点',
-  'chapter.task_point_completed': '任务点已完成',
-  'chapter.video.started': '视频开始播放',
-  'chapter.video.progress': '视频进度已更新',
-  'chapter.video.completion_retry': '正在确认视频完成状态',
-  'chapter.audio.started': '音频开始播放',
-  'chapter.audio.progress': '音频进度已更新',
-  'chapter.audio.completion_retry': '正在确认音频完成状态',
-  'chapter.document.completed': '文档任务已完成',
-  'chapter.reading.completed': '阅读任务已完成',
-  'chapter.empty_page.completed': '页面任务已完成',
-  'chapter.quiz.submitted': '测验已提交',
-  'chapter.quiz.saved': '测验答案已保存',
-  'chapter.quiz.unsubmitted': '测验暂未提交',
-  'chapter.quiz.rejected': '测验提交失败',
-  'operator.intervention_resolved': '待处理事项已确认',
-  'notification.sent': '通知已发送',
-  'notification.failed': '通知发送失败',
-}
-
-const REASON_MESSAGES: Record<string, string> = {
-  platform_authentication_failed: '学习通登录状态已失效，请检查账号凭据后再试。',
-  account_runtime_unavailable: '账号运行环境暂不可用，请稍后再试。',
-  platform_response_invalid: '学习通返回了无法识别的数据，请刷新课程后再试。',
-  platform_completion_rejected: '学习通未接受本次完成记录，请稍后再试。',
-  platform_request_failed: '请求学习通失败，请检查网络后再试。',
-  internal_execution_error: '执行过程中发生内部错误，请查看技术详情。',
-  chapter_not_found: '课程中已找不到这个章节，请重新获取课程目录。',
-  chapter_not_open: '章节尚未开放，已按账号设置处理。',
-  quiz_requires_answers: '测验仍有题目无法作答，需要手动处理。',
-  unsupported_task_point: '章节包含当前版本暂不支持的任务点。',
-  unresolved_task_points: '章节中有任务点无法识别，需要检查页面内容。',
-  provider_unconfigured: '尚未配置可用的答题服务。',
-  coverage_below_threshold: '可回答题目比例不足，测验未自动提交。',
-  provider_rejected: '通知服务拒绝了本次发送请求。',
-  configuration_invalid: '相关服务配置无效，请检查设置。',
-  max_attempts_exceeded: '多次尝试仍未成功，请检查配置或网络。',
-}
-
-const STATUS_MESSAGES: Record<string, string> = {
-  queued: '任务正在等待执行。',
-  running: '任务正在执行中。',
-  pause_requested: '任务将在安全位置暂停。',
-  paused: '任务已暂停，可在任务页面恢复。',
-  cancel_requested: '任务将在安全位置取消。',
-  recovering: '任务正在从上次中断处恢复。',
-  succeeded: '所选章节已全部处理完成。',
-  needs_attention: '部分章节未能自动完成，需要进一步处理。',
-  failed: '任务未能正常完成，请查看失败原因。',
-  canceled: '任务已取消。',
-}
-
-const dateFormatter = new Intl.DateTimeFormat('zh-CN', {
-  year: 'numeric',
-  month: '2-digit',
-  day: '2-digit',
-  hour: '2-digit',
-  minute: '2-digit',
-  second: '2-digit',
-  hour12: false,
-})
-
-const relativeFormatter = new Intl.RelativeTimeFormat('zh-CN', { numeric: 'auto' })
-
-function eventTime(event: SystemEvent): number {
-  const value = new Date(event.occurred_at).getTime()
-  return Number.isNaN(value) ? 0 : value
-}
-
-function formatDate(value: string): string {
-  const date = new Date(value)
-  return Number.isNaN(date.getTime()) ? '-' : dateFormatter.format(date)
-}
-
-function formatRelativeDate(value: string): string {
-  const timestamp = new Date(value).getTime()
-  if (Number.isNaN(timestamp)) return '-'
-  const seconds = Math.round((timestamp - Date.now()) / 1000)
-  if (Math.abs(seconds) < 60) return relativeFormatter.format(seconds, 'second')
-  const minutes = Math.round(seconds / 60)
-  if (Math.abs(minutes) < 60) return relativeFormatter.format(minutes, 'minute')
-  const hours = Math.round(minutes / 60)
-  if (Math.abs(hours) < 24) return relativeFormatter.format(hours, 'hour')
-  const days = Math.round(hours / 24)
-  if (Math.abs(days) < 7) return relativeFormatter.format(days, 'day')
-  return dateFormatter.format(new Date(timestamp)).slice(0, 10)
-}
-
-function formatIdentifier(value: string): string {
-  if (value.length <= 20) return value
-  return `${value.slice(0, 8)}...${value.slice(-6)}`
-}
-
-function displayValue(value: unknown): string | null {
-  if (typeof value === 'boolean') return value ? '是' : '否'
-  if (typeof value === 'number' || typeof value === 'string') return String(value)
-  return null
-}
 
 function reasonFor(eventsInGroup: SystemEvent[], task: StudyTask | null): string {
   for (const event of eventsInGroup) {
@@ -481,40 +364,12 @@ function groupIsExpanded(key: string): boolean {
   return expandedGroups.value.has(key)
 }
 
-function goToTasks(): void {
-  void router.push({ name: 'tasks' })
+function goToTask(taskId: string): void {
+  void router.push({ name: 'tasks', params: { taskId } })
 }
 
 function isFutureDate(timestamp: number): boolean {
   return timestamp > Date.now()
-}
-
-function payloadEntries(event: SystemEvent): Array<{ label: string; value: string }> {
-  const labels: Record<string, string> = {
-    status: '状态',
-    reason: '原因码',
-    count: '数量',
-    answered_count: '已回答',
-    total_questions: '题目总数',
-    coverage: '覆盖率',
-    provider_error_count: '答题服务错误',
-    provider_result_reason: '答题结果',
-    channel: '通知渠道',
-    exit_reason: '结束原因',
-    run_id: '运行编号',
-    attempt: '尝试次数',
-    task_type: '任务点类型',
-    play_time: '播放进度',
-    duration: '总时长',
-    unopened_policy: '未开放策略',
-  }
-  const entries: Array<{ label: string; value: string }> = []
-  for (const [key, value] of Object.entries(event.payload)) {
-    const formatted = displayValue(value)
-    if (!labels[key] || formatted === null) continue
-    entries.push({ label: labels[key], value: formatted })
-  }
-  return entries
 }
 
 function groupTagLabel(group: ActivityGroup): string {
@@ -527,67 +382,47 @@ function groupTagLabel(group: ActivityGroup): string {
 
 <template>
   <section class="content-section flush activity-section">
-    <div class="section-heading padded activity-heading">
-      <div class="activity-title">
-        <Activity :size="18" />
-        <div>
-          <h2>活动记录</h2>
-          <span>{{ activityGroups.length }} 项活动 · {{ events.data.value?.length ?? 0 }} 条事件</span>
-        </div>
-      </div>
-      <div class="heading-actions activity-actions">
-        <NTag
-          size="small"
-          :type="activeStreamMeta.type"
-          :bordered="false"
-          class="stream-status"
-        >
-          <component :is="activeStreamMeta.icon" :size="12" />
-          <span>{{ activeStreamMeta.label }}</span>
-        </NTag>
-        <NButton
-          quaternary
-          circle
-          title="刷新活动"
-          aria-label="刷新活动"
-          :loading="events.isFetching.value"
-          @click="events.refetch()"
-        >
-          <template #icon><RefreshCw :size="16" /></template>
-        </NButton>
-        <NButton
-          quaternary
-          circle
-          title="归档历史活动"
-          aria-label="归档历史活动"
-          @click="archiveOpen = true"
-        >
-          <template #icon><Archive :size="16" /></template>
-        </NButton>
-      </div>
-    </div>
-
-    <div class="activity-toolbar">
-      <NSelect
-        v-model:value="categoryFilter"
-        class="activity-filter"
-        clearable
-        size="small"
-        :options="categoryOptions"
-        placeholder="全部活动"
-        aria-label="按活动状态筛选"
-      />
-      <div class="activity-stats" aria-label="活动概况">
+    <div class="list-toolbar">
+      <div class="segmented" role="tablist" aria-label="按活动状态筛选">
         <button
+          v-for="tab in CATEGORY_TABS"
+          :key="tab.label"
           type="button"
-          :class="{ active: categoryFilter === 'attention' }"
-          @click="categoryFilter = categoryFilter === 'attention' ? null : 'attention'"
+          role="tab"
+          :aria-selected="categoryFilter === tab.value"
+          @click="categoryFilter = tab.value"
         >
-          <TriangleAlert :size="13" />需要处理 {{ categoryCounts.attention }}
+          {{ tab.label }}
+          <span
+            class="count"
+            :class="{ warn: tab.value === 'attention' && categoryCounts.attention > 0 }"
+          >{{ tab.value === null ? activityGroups.length : categoryCounts[tab.value] }}</span>
         </button>
-        <span>进行中 {{ categoryCounts.running }}</span>
-        <span>已完成 {{ categoryCounts.completed }}</span>
       </div>
+      <span class="toolbar-spacer" />
+      <span class="list-count">{{ events.data.value?.length ?? 0 }} 条事件</span>
+      <NTag
+        size="small"
+        :type="activeStreamMeta.type"
+        :bordered="false"
+        class="stream-status"
+      >
+        <component :is="activeStreamMeta.icon" :size="12" />
+        <span>{{ activeStreamMeta.label }}</span>
+      </NTag>
+      <IconAction
+        label="刷新活动"
+        :icon="RefreshCw"
+        size="medium"
+        :loading="events.isFetching.value"
+        @click="events.refetch()"
+      />
+      <IconAction
+        label="归档历史活动"
+        :icon="Archive"
+        size="medium"
+        @click="archiveOpen = true"
+      />
     </div>
 
     <NModal v-model:show="archiveOpen" preset="dialog" title="归档历史活动">
@@ -627,24 +462,20 @@ function groupTagLabel(group: ActivityGroup): string {
       </div>
     </div>
 
-    <NEmpty
+    <EmptyState
       v-else-if="activityGroups.length === 0"
-      description="任务开始后，执行结果会显示在这里"
-      class="activity-empty"
-    >
-      <template #icon><CheckCircle2 :size="24" /></template>
-    </NEmpty>
+      :icon="CheckCircle2"
+      title="还没有活动记录"
+      description="任务开始执行后，进度与结果会实时显示在这里"
+    />
 
-    <NEmpty
+    <EmptyState
       v-else-if="filteredGroups.length === 0"
-      description="当前筛选条件下没有活动"
-      class="activity-empty"
+      :icon="ListTree"
+      title="当前筛选下没有活动"
     >
-      <template #icon><ListTree :size="24" /></template>
-      <template #extra>
-        <NButton size="small" @click="categoryFilter = null">清除筛选</NButton>
-      </template>
-    </NEmpty>
+      <NButton size="small" @click="categoryFilter = null">清除筛选</NButton>
+    </EmptyState>
 
     <div v-else class="activity-list">
       <article
@@ -691,11 +522,11 @@ function groupTagLabel(group: ActivityGroup): string {
                 text
                 size="small"
                 class="activity-link"
-                aria-label="前往任务"
-                @click="goToTasks"
+                aria-label="查看任务详情"
+                @click="goToTask(group.task.id)"
               >
                 <template #icon><ExternalLink :size="14" /></template>
-                前往任务
+                查看任务
               </NButton>
               <NButton
                 text
@@ -760,95 +591,16 @@ function groupTagLabel(group: ActivityGroup): string {
 </template>
 
 <style scoped>
-.activity-heading {
-  align-items: center;
-}
-
-.activity-title {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  gap: 9px;
-  color: var(--color-accent);
-}
-
-.activity-title h2,
-.activity-title span {
-  display: block;
-}
-
-.activity-title h2 {
-  color: var(--color-text);
-}
-
-.activity-title span {
-  margin-top: 3px;
-  color: var(--color-text-muted);
-  font-size: 11px;
-  font-weight: 400;
-}
-
-.activity-actions {
-  flex-shrink: 0;
-}
-
 .stream-status :deep(.n-tag__content) {
   display: inline-flex;
   align-items: center;
   gap: 4px;
 }
 
-.activity-toolbar {
-  display: flex;
-  min-height: 52px;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 9px 20px;
-  border-bottom: 1px solid var(--color-border-soft);
-  background: var(--color-surface-muted);
-}
-
-.activity-filter {
-  width: 136px;
-}
-
-.activity-stats {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  gap: 16px;
-  color: var(--color-text-muted);
-  font-size: 11px;
-  white-space: nowrap;
-}
-
-.activity-stats button {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  border: 0;
-  border-radius: 5px;
-  background: transparent;
-  padding: 4px 6px;
-  color: var(--color-warning);
-  cursor: pointer;
-  transition: background-color 140ms ease, transform 140ms cubic-bezier(0.23, 1, 0.32, 1);
-}
-
-.activity-stats button.active {
-  background: var(--color-warning-soft);
-}
-
-.activity-stats button:active,
-.activity-controls :deep(.n-button):active {
-  transform: scale(0.97);
-}
-
 .archive-description {
   margin: 0 0 14px;
   color: var(--color-text-muted);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   line-height: 1.6;
 }
 
@@ -965,21 +717,21 @@ function groupTagLabel(group: ActivityGroup): string {
 
 .activity-heading-copy strong {
   color: var(--color-text-strong);
-  font-size: 13px;
+  font-size: var(--fs-sm);
   line-height: 1.4;
 }
 
 .activity-heading-copy span {
   margin-top: 2px;
   color: var(--color-text-muted);
-  font-size: 11px;
+  font-size: var(--fs-xs);
 }
 
 .activity-topline time {
   flex: 0 0 auto;
   margin-left: 4px;
   color: var(--color-text-muted);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   line-height: 22px;
   white-space: nowrap;
 }
@@ -987,7 +739,7 @@ function groupTagLabel(group: ActivityGroup): string {
 .activity-description {
   margin: 8px 0 0;
   color: var(--color-text);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   line-height: 1.55;
 }
 
@@ -998,7 +750,7 @@ function groupTagLabel(group: ActivityGroup): string {
   gap: 5px 14px;
   margin-top: 7px;
   color: var(--color-text-faint);
-  font-size: 11px;
+  font-size: var(--fs-xs);
 }
 
 .activity-meta span {
@@ -1016,7 +768,7 @@ function groupTagLabel(group: ActivityGroup): string {
 }
 
 .activity-controls :deep(.n-button) {
-  font-size: 11px;
+  font-size: var(--fs-xs);
   transition: transform 140ms cubic-bezier(0.23, 1, 0.32, 1);
 }
 
@@ -1052,7 +804,7 @@ function groupTagLabel(group: ActivityGroup): string {
   padding: 8px 12px;
   border-bottom: 1px solid var(--color-border-soft);
   color: var(--color-text-muted);
-  font-size: 11px;
+  font-size: var(--fs-xs);
 }
 
 .detail-heading code {
@@ -1060,7 +812,7 @@ function groupTagLabel(group: ActivityGroup): string {
   margin-left: auto;
   overflow: hidden;
   color: var(--color-text-disabled);
-  font-size: 10px;
+  font-size: var(--fs-xs);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1097,14 +849,14 @@ function groupTagLabel(group: ActivityGroup): string {
 
 .event-title strong {
   color: var(--color-text-strong);
-  font-size: 11px;
+  font-size: var(--fs-xs);
 }
 
 .event-title code {
   min-width: 0;
   overflow: hidden;
   color: var(--color-text-disabled);
-  font-size: 10px;
+  font-size: var(--fs-xs);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1113,7 +865,7 @@ function groupTagLabel(group: ActivityGroup): string {
   flex: 0 0 auto;
   margin-left: auto;
   color: var(--color-text-faint);
-  font-size: 10px;
+  font-size: var(--fs-xs);
   white-space: nowrap;
 }
 
@@ -1125,7 +877,7 @@ function groupTagLabel(group: ActivityGroup): string {
   gap: 5px 12px;
   margin-top: 5px;
   color: var(--color-text-muted);
-  font-size: 10px;
+  font-size: var(--fs-xs);
 }
 
 .event-payload span {
@@ -1149,44 +901,12 @@ function groupTagLabel(group: ActivityGroup): string {
   .activity-group:hover {
     background: var(--color-surface-muted);
   }
-
-  .activity-stats button:hover {
-    background: var(--color-warning-soft);
-  }
 }
 
 @media (max-width: 680px) {
-  .activity-heading {
-    align-items: flex-start;
-    flex-wrap: wrap;
-  }
-
-  .activity-title {
-    flex: 1 1 auto;
-  }
-
-  .activity-actions {
-    gap: 4px;
-  }
-
-  .stream-status span {
+  .stream-status span,
+  .list-count {
     display: none;
-  }
-
-  .activity-toolbar {
-    align-items: stretch;
-    flex-direction: column;
-    gap: 8px;
-    padding: 10px 14px;
-  }
-
-  .activity-filter {
-    width: 100%;
-  }
-
-  .activity-stats {
-    justify-content: space-between;
-    gap: 8px;
   }
 
   .activity-summary {
@@ -1235,7 +955,6 @@ function groupTagLabel(group: ActivityGroup): string {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .activity-stats button,
   .activity-controls :deep(.n-button),
   .detail-chevron {
     transition-duration: 0ms;

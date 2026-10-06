@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Ticket, CalendarClock, Coins, RefreshCw } from 'lucide-vue-next'
+import { CalendarClock, Check, Coins, ListChecks, RefreshCw, Ticket, UserRound } from 'lucide-vue-next'
 import {
   NAlert,
   NButton,
@@ -11,20 +11,39 @@ import {
   useMessage,
 } from 'naive-ui'
 import { computed, ref } from 'vue'
+import type { Component } from 'vue'
 import { useQuery, useQueryClient } from '@tanstack/vue-query'
+import { useRouter } from 'vue-router'
 
 import { ApiError, apiRequest } from '@/api/client'
-import type { CardKeyRedeemResponse, EntitlementResponse } from '@/api/types'
+import type {
+  Account,
+  CardKeyRedeemResponse,
+  EntitlementResponse,
+  StudyTask,
+} from '@/api/types'
+import IconAction from '@/components/ui/IconAction.vue'
 import { useAuthStore } from '@/stores/auth'
 
 const message = useMessage()
 const queryClient = useQueryClient()
+const router = useRouter()
 const auth = useAuthStore()
 
 const entitlementQuery = useQuery({
   queryKey: ['entitlement'],
   queryFn: () => apiRequest<EntitlementResponse>('/cards/me'),
   refetchOnWindowFocus: true,
+})
+
+const accountsQuery = useQuery({
+  queryKey: ['accounts'],
+  queryFn: () => apiRequest<Account[]>('/accounts'),
+})
+
+const tasksPeekQuery = useQuery({
+  queryKey: ['tasks', 'peek'],
+  queryFn: () => apiRequest<StudyTask[]>('/tasks?limit=1'),
 })
 
 const showRedeem = ref(false)
@@ -37,6 +56,8 @@ const planActive = computed(() => {
   return expires !== null && expires !== undefined && new Date(expires).getTime() > Date.now()
 })
 const hasEntitlement = computed(() => entitlement.value?.active === true)
+const hasAccount = computed(() => (accountsQuery.data.value?.length ?? 0) > 0)
+const hasTask = computed(() => (tasksPeekQuery.data.value?.length ?? 0) > 0)
 
 const planExpiryText = computed(() => {
   const expires = entitlement.value?.plan_expires_at
@@ -53,6 +74,50 @@ function formatDateTime(date: Date): string {
   const pad = (value: number) => String(value).padStart(2, '0')
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
 }
+
+interface OnboardingStep {
+  key: string
+  label: string
+  hint: string
+  icon: Component
+  done: boolean
+  actionLabel: string
+  action: () => void
+}
+
+const steps = computed<OnboardingStep[]>(() => [
+  {
+    key: 'redeem',
+    label: '兑换卡密',
+    hint: '激活时间卡或次数卡权益',
+    icon: Ticket,
+    done: hasEntitlement.value,
+    actionLabel: '去兑换',
+    action: () => {
+      showRedeem.value = true
+    },
+  },
+  {
+    key: 'account',
+    label: '添加学习通账号',
+    hint: '绑定密码或 Cookie 登录凭据',
+    icon: UserRound,
+    done: hasAccount.value,
+    actionLabel: '去添加',
+    action: () => void router.push({ name: 'accounts', query: { create: '1' } }),
+  },
+  {
+    key: 'task',
+    label: '创建学习任务',
+    hint: '选择课程章节加入队列',
+    icon: ListChecks,
+    done: hasTask.value,
+    actionLabel: '去创建',
+    action: () => void router.push({ name: 'tasks', query: { create: '1' } }),
+  },
+])
+
+const allStepsDone = computed(() => steps.value.every((step) => step.done))
 
 async function submitRedeem(): Promise<void> {
   const code = redeemCode.value.trim()
@@ -85,43 +150,57 @@ async function submitRedeem(): Promise<void> {
 
 <template>
   <section class="content-section">
-    <div class="section-heading padded">
-      <div>
-        <h2>我的账户</h2>
-        <p>查看云端学习权益状态，兑换卡密后即可创建学习任务</p>
-      </div>
-      <div class="heading-actions">
-        <NButton
-          quaternary
-          circle
-          :loading="entitlementQuery.isFetching.value"
-          aria-label="刷新"
-          @click="queryClient.invalidateQueries({ queryKey: ['entitlement'] })"
-        >
-          <template #icon><RefreshCw :size="16" /></template>
-        </NButton>
-        <NButton type="primary" @click="showRedeem = true">
-          <template #icon><Ticket :size="16" /></template>
-          兑换卡密
-        </NButton>
-      </div>
+    <div class="portal-toolbar">
+      <IconAction
+        label="刷新权益"
+        :icon="RefreshCw"
+        :loading="entitlementQuery.isFetching.value"
+        @click="entitlementQuery.refetch()"
+      />
+      <NButton type="primary" @click="showRedeem = true">
+        <template #icon><Ticket :size="16" /></template>
+        兑换卡密
+      </NButton>
     </div>
 
-    <div class="padded portal-body">
-      <NAlert
-        v-if="entitlementQuery.error.value"
-        type="error"
-        :bordered="false"
-        title="权益状态加载失败"
-      >
-        {{
-          entitlementQuery.error.value instanceof ApiError
-            ? entitlementQuery.error.value.message
-            : '请稍后重试'
-        }}
-      </NAlert>
+    <NAlert
+      v-if="entitlementQuery.error.value"
+      type="error"
+      :bordered="false"
+      title="权益状态加载失败"
+      class="portal-alert"
+    >
+      {{
+        entitlementQuery.error.value instanceof ApiError
+          ? entitlementQuery.error.value.message
+          : '请稍后重试'
+      }}
+    </NAlert>
 
-      <div v-else class="status-grid">
+    <template v-else>
+      <div v-if="!allStepsDone" class="onboarding">
+        <p class="onboarding-title">三步上手</p>
+        <div
+          v-for="(step, index) in steps"
+          :key="step.key"
+          class="onboarding-step"
+          :class="{ done: step.done }"
+        >
+          <span class="step-index">
+            <Check v-if="step.done" :size="15" />
+            <template v-else>{{ index + 1 }}</template>
+          </span>
+          <span class="step-icon"><component :is="step.icon" :size="16" /></span>
+          <div class="step-copy">
+            <strong>{{ step.label }}</strong>
+            <span>{{ step.hint }}</span>
+          </div>
+          <NTag v-if="step.done" size="small" type="success" :bordered="false">已完成</NTag>
+          <NButton v-else size="small" @click="step.action">{{ step.actionLabel }}</NButton>
+        </div>
+      </div>
+
+      <div class="status-grid">
         <div class="status-card" :class="{ ok: planActive }">
           <div class="status-icon"><CalendarClock :size="20" /></div>
           <div class="status-meta">
@@ -140,13 +219,7 @@ async function submitRedeem(): Promise<void> {
           </div>
         </div>
       </div>
-
-      <div v-if="entitlementQuery.data.value && !hasEntitlement" class="portal-tip">
-        <NAlert type="warning" :bordered="false" title="尚无可用权益">
-          创建学习任务前，请先兑换时间卡或次数卡。拿到卡密后点击右上角「兑换卡密」。
-        </NAlert>
-      </div>
-    </div>
+    </template>
 
     <NModal
       v-model:show="showRedeem"
@@ -174,60 +247,145 @@ async function submitRedeem(): Promise<void> {
 </template>
 
 <style scoped>
-.portal-body {
+.portal-toolbar {
   display: flex;
-  flex-direction: column;
-  gap: 16px;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.portal-alert {
+  margin-bottom: 16px;
+}
+
+.onboarding {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 16px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface-muted);
+  padding: 14px;
+}
+
+.onboarding-title {
+  margin: 0 0 2px;
+  color: var(--color-text-muted);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+}
+
+.onboarding-step {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  padding: 10px 12px;
+}
+
+.step-index {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--color-neutral-soft);
+  color: var(--color-text-muted);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+}
+
+.onboarding-step.done .step-index {
+  background: var(--color-accent-soft);
+  color: var(--color-accent-strong);
+}
+
+.step-icon {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: var(--radius-md);
+  background: var(--color-accent-muted);
+  color: var(--color-accent);
+}
+
+.step-copy {
+  min-width: 0;
+  flex: 1;
+}
+
+.step-copy strong,
+.step-copy span {
+  display: block;
+}
+
+.step-copy strong {
+  color: var(--color-text-strong);
+  font-size: var(--fs-sm);
+}
+
+.step-copy span {
+  color: var(--color-text-muted);
+  font-size: var(--fs-xs);
 }
 
 .status-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-  gap: 16px;
+  gap: 12px;
 }
 
 .status-card {
   display: flex;
   gap: 14px;
   align-items: flex-start;
-  padding: 18px;
-  border-radius: 14px;
-  background: var(--surface-muted, rgba(128, 128, 128, 0.06));
-  border: 1px solid rgba(128, 128, 128, 0.14);
+  padding: 16px;
+  border: 1px solid var(--color-border-soft);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface-muted);
 }
 
 .status-card.ok {
-  border-color: rgba(48, 173, 99, 0.4);
+  border-color: var(--color-accent-border);
 }
 
 .status-icon {
   display: grid;
-  place-items: center;
   width: 40px;
   height: 40px;
-  border-radius: 10px;
-  background: rgba(128, 128, 128, 0.12);
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: var(--radius-md);
+  background: var(--color-accent-muted);
+  color: var(--color-accent);
 }
 
 .status-meta {
   display: flex;
+  min-width: 0;
   flex-direction: column;
-  gap: 4px;
   align-items: flex-start;
+  gap: 4px;
 }
 
 .status-label {
-  font-size: 12px;
-  opacity: 0.65;
+  color: var(--color-text-faint);
+  font-size: var(--fs-xs);
 }
 
 .status-value {
-  font-size: 15px;
+  color: var(--color-text-strong);
+  font-size: var(--fs-md);
 }
 
 .status-hint {
-  font-size: 12px;
-  opacity: 0.55;
+  color: var(--color-text-faint);
+  font-size: var(--fs-xs);
 }
 
 .modal-actions {

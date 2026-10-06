@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { LockKeyhole } from 'lucide-vue-next'
+import { GraduationCap } from 'lucide-vue-next'
 import { NAlert, NButton, NForm, NFormItem, NInput } from 'naive-ui'
-import { computed, reactive, ref } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 
 import { ApiError } from '@/api/client'
@@ -11,6 +11,7 @@ const auth = useAuthStore()
 const router = useRouter()
 const loading = ref(false)
 const errorMessage = ref('')
+const usernameError = ref('')
 const form = reactive({ username: '', password: '', confirmPassword: '' })
 const isSetup = computed(() => auth.phase === 'setup')
 const passwordRequirement = '8–256 位，仅限 字母/数字/英文符号'
@@ -33,19 +34,30 @@ const confirmPasswordMismatch = computed(
     form.confirmPassword !== form.password,
 )
 
+watch(() => form.username, () => {
+  usernameError.value = ''
+})
+
+function validateUsername(username: string): boolean {
+  if (!username) {
+    usernameError.value = '请输入账号'
+    return false
+  }
+  if (isSetup.value && username.length < 3) {
+    usernameError.value = '账号至少需要 3 个字符'
+    return false
+  }
+  if (isSetup.value && username.length > 80) {
+    usernameError.value = '账号不能超过 80 个字符'
+    return false
+  }
+  return true
+}
+
 async function submit() {
   errorMessage.value = ''
   const username = form.username.trim()
-  if (isSetup.value) {
-    if (username.length < 3) {
-      errorMessage.value = '账号至少需要 3 个字符'
-      return
-    }
-    if (username.length > 80) {
-      errorMessage.value = '账号不能超过 80 个字符'
-      return
-    }
-  }
+  if (!validateUsername(username)) return
   if (form.password.length < 8) {
     errorMessage.value = '密码至少需要 8 个字符'
     return
@@ -66,7 +78,7 @@ async function submit() {
   try {
     if (isSetup.value) await auth.setup(username, form.password)
     else await auth.login(username, form.password)
-    await router.replace({ name: 'dashboard' })
+    await router.replace({ name: auth.isAdmin ? 'dashboard' : 'portal' })
   } catch (error) {
     errorMessage.value = error instanceof ApiError ? error.message : '操作失败，请稍后重试'
   } finally {
@@ -77,22 +89,27 @@ async function submit() {
 
 <template>
   <main class="auth-page">
+    <div class="auth-brand">
+      <span class="brand-mark"><GraduationCap :size="19" /></span>
+      学习任务控制台
+    </div>
     <section class="auth-panel" aria-labelledby="auth-title">
       <div class="auth-heading">
-        <span class="auth-icon"><LockKeyhole :size="22" /></span>
-        <div>
-          <h1 id="auth-title">{{ isSetup ? '初始化控制台' : '登录' }}</h1>
-          <p>{{ isSetup ? '创建首个本地管理员账号' : '进入学习任务控制台' }}</p>
-        </div>
+        <h1 id="auth-title">{{ isSetup ? '初始化控制台' : '登录' }}</h1>
+        <p>{{ isSetup ? '首次使用，请创建本地管理员账号' : '管理员与普通用户均在此登录' }}</p>
       </div>
-      <NAlert v-if="errorMessage" type="error" :show-icon="false">{{ errorMessage }}</NAlert>
+      <NAlert v-if="errorMessage" type="error" :show-icon="false" role="alert">{{ errorMessage }}</NAlert>
       <NForm :model="form" label-placement="top" @submit.prevent="submit">
-        <NFormItem label="账号">
+        <NFormItem
+          label="账号"
+          :validation-status="usernameError ? 'error' : undefined"
+          :feedback="usernameError || undefined"
+        >
           <NInput
             v-model:value="form.username"
             autocomplete="username"
-            :input-props="{ 'aria-label': '管理员账号' }"
-            placeholder="请输入账号"
+            :input-props="{ 'aria-label': isSetup ? '管理员账号' : '账号' }"
+            :placeholder="isSetup ? '3–80 个字符' : '请输入账号'"
           />
         </NFormItem>
         <NFormItem
@@ -149,10 +166,11 @@ async function submit() {
             @keyup.enter="submit"
           />
         </NFormItem>
-        <NButton type="primary" block attr-type="submit" :loading="loading">
+        <NButton type="primary" block size="large" attr-type="submit" :loading="loading">
           {{ isSetup ? '创建并登录' : '登录' }}
         </NButton>
       </NForm>
+      <p v-if="!isSetup" class="auth-footnote">没有账号？请联系管理员为你开通</p>
     </section>
   </main>
 </template>
