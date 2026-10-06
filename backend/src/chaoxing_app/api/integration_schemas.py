@@ -88,3 +88,10 @@ class NotificationIntegrationUpdateRequest(BaseModel):
     clear_bot_token: bool = Field(default=False, strict=True)
     clear_chat_id: bool = Field(default=False, strict=True)
     reset: bool = Field(default=False, strict=True)
+
+
+class IntegrationTestResponse(BaseModel):
+    ok: bool
+    reason: str = ""
+    answer: str | None = None
+    latency_ms: int

@@ -9,8 +9,20 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from chaoxing_app.api.integrations import (
+    get_answer_provider_builder,
+    get_notification_sender_builder,
+)
 from chaoxing_app.infrastructure.db.models import IntegrationSetting, StudyTask
+from chaoxing_app.infrastructure.notifications import (
+    NotificationChannel,
+    NotificationHTTPError,
+    NotificationMessage,
+    NotificationResult,
+)
 from chaoxing_app.main import create_app
+from chaoxing_app.platform.errors import PlatformHTTPError
+from chaoxing_app.platform.task_points.quiz import QuizQuestion
 from chaoxing_app.settings import AppSettings
 
 
@@ -508,3 +520,150 @@ def test_local_tiku_adapter_requires_explicit_unsafe_endpoint_opt_in() -> None:
         assert accepted.status_code == 200
         assert accepted.json()["enabled"] is True
         assert accepted.json()["config"]["allow_unsafe_endpoint"] is True
+
+
+class _RecordingSender:
+    def __init__(self, *, accepted: bool = True, error: Exception | None = None) -> None:
+        self.messages: list[NotificationMessage] = []
+        self._accepted = accepted
+        self._error = error
+
+    def send(self, message: NotificationMessage) -> NotificationResult:
+        self.messages.append(message)
+        if self._error is not None:
+            raise self._error
+        return NotificationResult(
+            channel=NotificationChannel.BARK,
+            delivered=self._accepted,
+            status_code=200,
+            reason="" if self._accepted else "provider_rejected",
+        )
+
+
+def test_notification_test_requires_enabled_channel_and_reports_delivery() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        app, client = make_client(temp_dir)
+        sender = _RecordingSender()
+        built: list[str | None] = []
+
+        def builder(configuration, _session):  # type: ignore[no-untyped-def]
+            built.append(configuration.webhook_url)
+            return sender
+
+        app.dependency_overrides[get_notification_sender_builder] = lambda: builder
+        with client:
+            csrf = bootstrap_and_login(client)
+            path = "/api/v1/settings/integrations/notifications/bark"
+            assert client.post(f"{path}/test").status_code == 403
+            disabled = client.post(f"{path}/test", headers={"X-CSRF-Token": csrf})
+            assert disabled.status_code == 409
+
+            webhook = "https://notify.example.test/bark-private-token"
+            enabled = client.patch(
+                path,
+                headers={"X-CSRF-Token": csrf},
+                json={"enabled": True, "webhook_url": webhook},
+            )
+            assert enabled.status_code == 200
+            delivered = client.post(f"{path}/test", headers={"X-CSRF-Token": csrf})
+
+        assert delivered.status_code == 200
+        body = delivered.json()
+        assert body["ok"] is True
+        assert body["reason"] == ""
+        assert webhook not in delivered.text
+        assert built == [webhook]
+        assert len(sender.messages) == 1
+
+
+def test_notification_test_sanitizes_provider_failures() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        app, client = make_client(temp_dir)
+        failing = _RecordingSender(
+            error=NotificationHTTPError(NotificationChannel.BARK, 502),
+        )
+        app.dependency_overrides[get_notification_sender_builder] = (
+            lambda: lambda _configuration, _session: failing
+        )
+        with client:
+            csrf = bootstrap_and_login(client)
+            path = "/api/v1/settings/integrations/notifications/bark"
+            client.patch(
+                path,
+                headers={"X-CSRF-Token": csrf},
+                json={"enabled": True, "webhook_url": "https://notify.example.test/bark-x"},
+            )
+            response = client.post(f"{path}/test", headers={"X-CSRF-Token": csrf})
+
+        assert response.status_code == 200
+        assert response.json()["ok"] is False
+        assert response.json()["reason"] == "http_502"
+        assert "bark-x" not in response.text
+
+
+def test_answer_test_runs_sample_question_against_enabled_provider() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        app, client = make_client(temp_dir)
+        questions: list[QuizQuestion] = []
+
+        class _Provider:
+            def answer(self, question: QuizQuestion, *, course_context: str = "") -> str:
+                del course_context
+                questions.append(question)
+                return "A. 北京"
+
+        app.dependency_overrides[get_answer_provider_builder] = (
+            lambda: lambda _configuration, _session: _Provider()
+        )
+        with client:
+            csrf = bootstrap_and_login(client)
+            path = "/api/v1/settings/integrations/answer"
+            disabled = client.post(f"{path}/test", headers={"X-CSRF-Token": csrf})
+            assert disabled.status_code == 409
+            enabled = client.patch(
+                path,
+                headers={"X-CSRF-Token": csrf},
+                json={
+                    "provider": "tiku_adapter",
+                    "endpoint": "https://tiku.example.test/query",
+                    "enabled": True,
+                },
+            )
+            assert enabled.status_code == 200, enabled.text
+            response = client.post(f"{path}/test", headers={"X-CSRF-Token": csrf})
+
+        assert response.status_code == 200
+        assert response.json()["ok"] is True
+        assert response.json()["answer"] == "A. 北京"
+        assert len(questions) == 1
+
+
+def test_answer_test_reports_failures_without_exception_text() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        app, client = make_client(temp_dir)
+
+        class _Provider:
+            def answer(self, question: QuizQuestion, *, course_context: str = "") -> str:
+                raise PlatformHTTPError("secret-bearing upstream message", status_code=401)
+
+        app.dependency_overrides[get_answer_provider_builder] = (
+            lambda: lambda _configuration, _session: _Provider()
+        )
+        with client:
+            csrf = bootstrap_and_login(client)
+            path = "/api/v1/settings/integrations/answer"
+            client.patch(
+                path,
+                headers={"X-CSRF-Token": csrf},
+                json={
+                    "provider": "tiku_adapter",
+                    "endpoint": "https://tiku.example.test/query",
+                    "enabled": True,
+                },
+            )
+            response = client.post(f"{path}/test", headers={"X-CSRF-Token": csrf})
+
+        assert response.status_code == 200
+        assert response.json()["ok"] is False
+        assert response.json()["reason"] == "provider_http_error"
+        assert "secret-bearing" not in response.text
