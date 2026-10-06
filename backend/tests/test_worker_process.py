@@ -44,9 +44,7 @@ def database_tables(path: Path) -> set[str]:
     with sqlite3.connect(path) as connection:
         return {
             str(row[0])
-            for row in connection.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'table'"
-            )
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
         }
 
 
@@ -166,10 +164,17 @@ def test_worker_entry_rebuilds_process_local_resources_and_disposes_engine(
             calls["secret_key"] = key
 
     class FakeAccountRuntimeFactory:
-        def __init__(self, *, session_factory: object, secret_box: object) -> None:
+        def __init__(
+            self,
+            *,
+            session_factory: object,
+            secret_box: object,
+            http_session_factory: object = None,
+        ) -> None:
             calls["account_runtime"] = self
             calls["session_factory"] = session_factory
             calls["secret_box"] = secret_box
+            calls["http_session_factory"] = http_session_factory
 
     class FakeAnswerProviderRuntimeFactory:
         def __init__(self, *, session_factory: object, secret_box: object) -> None:
@@ -287,9 +292,7 @@ def test_development_startup_rejects_unmigrated_database_without_creating_schema
         )
     )
 
-    with pytest.raises(DatabaseSchemaError, match="not initialized by Alembic"), TestClient(
-        app
-    ):
+    with pytest.raises(DatabaseSchemaError, match="not initialized by Alembic"), TestClient(app):
         pass
 
     assert database_tables(database_path) == set()

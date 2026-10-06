@@ -24,6 +24,7 @@ from chaoxing_app.infrastructure.db.system_settings import (
     DatabaseRunWindowSettingsLoader,
     SystemSettingsRepository,
 )
+from chaoxing_app.infrastructure.egress import random_proxy_session_factory
 from chaoxing_app.infrastructure.notification_dispatcher import NotificationDispatcher
 from chaoxing_app.infrastructure.security.login_rate_limit import LoginRateLimiter
 from chaoxing_app.infrastructure.security.passwords import PasswordService
@@ -44,8 +45,7 @@ async def sanitized_validation_error_response(
     detail: list[dict[str, object]] = []
     for error in exc.errors():
         location = [
-            item if isinstance(item, (str, int)) else str(item)
-            for item in error.get("loc", ())
+            item if isinstance(item, (str, int)) else str(item) for item in error.get("loc", ())
         ]
         detail.append(
             {
@@ -84,9 +84,7 @@ def build_supervisor_service(
             max_recovery_attempts=settings.worker_max_recovery_attempts,
             recovery_delay=timedelta(seconds=settings.worker_recovery_delay_seconds),
         ),
-        scheduler_gate=SchedulerGate(
-            DatabaseRunWindowSettingsLoader(make_session_factory(engine))
-        ),
+        scheduler_gate=SchedulerGate(DatabaseRunWindowSettingsLoader(make_session_factory(engine))),
     )
     maintenance_tick = 0
 
@@ -150,6 +148,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.course_discovery_service = CourseDiscoveryService(
             session_factory=app.state.session_factory,
             secret_box=app.state.secret_box,
+            http_session_factory=random_proxy_session_factory(settings.egress_proxies),
         )
         if settings.environment != "test":
             supervisor_service = build_supervisor_service(
