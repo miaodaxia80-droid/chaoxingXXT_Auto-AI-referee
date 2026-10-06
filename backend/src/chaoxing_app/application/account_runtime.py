@@ -73,12 +73,12 @@ class AccountRuntimeFactory:
         *,
         session_factory: sessionmaker[Session],
         secret_box: SecretBox,
-        client_factory: ClientFactory = _default_client_factory,
+        client_factory: ClientFactory | None = None,
         http_session_factory: HTTPSessionFactory = requests.Session,
     ) -> None:
         self._session_factory = session_factory
         self._secret_box = secret_box
-        self._client_factory = client_factory
+        self._client_factory = client_factory or _default_client_factory
         self._http_session_factory = http_session_factory
 
     def open(

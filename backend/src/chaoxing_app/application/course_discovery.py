@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+import requests
 from sqlalchemy.orm import Session, sessionmaker
 
 from chaoxing_app.application.account_runtime import (
@@ -11,6 +12,7 @@ from chaoxing_app.application.account_runtime import (
     AccountRuntimeError,
     AccountRuntimeFactory,
     ClientFactory,
+    HTTPSessionFactory,
     ResultT,
 )
 from chaoxing_app.infrastructure.security.secrets import SecretBox
@@ -33,18 +35,13 @@ class CourseDiscoveryService:
         session_factory: sessionmaker[Session],
         secret_box: SecretBox,
         client_factory: ClientFactory | None = None,
+        http_session_factory: HTTPSessionFactory = requests.Session,
     ) -> None:
-        self._runtime_factory = (
-            AccountRuntimeFactory(
-                session_factory=session_factory,
-                secret_box=secret_box,
-                client_factory=client_factory,
-            )
-            if client_factory is not None
-            else AccountRuntimeFactory(
-                session_factory=session_factory,
-                secret_box=secret_box,
-            )
+        self._runtime_factory = AccountRuntimeFactory(
+            session_factory=session_factory,
+            secret_box=secret_box,
+            client_factory=client_factory,
+            http_session_factory=http_session_factory,
         )
 
     def list_courses(self, account_id: int) -> tuple[Course, ...]:

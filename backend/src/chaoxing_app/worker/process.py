@@ -17,7 +17,9 @@ from chaoxing_app.infrastructure.db.engine import (
     make_session_factory,
 )
 from chaoxing_app.infrastructure.db.task_queue import TaskClaim
+from chaoxing_app.infrastructure.egress import random_proxy_session_factory
 from chaoxing_app.infrastructure.security.secrets import MasterKeyStore, SecretBox
+from chaoxing_app.settings import get_settings
 from chaoxing_app.worker.runtime import TaskExecutor, WorkerResult, WorkerRuntime
 
 
@@ -158,6 +160,7 @@ def worker_process_entry(
         runtime_factory = AccountRuntimeFactory(
             session_factory=session_factory,
             secret_box=secret_box,
+            http_session_factory=random_proxy_session_factory(get_settings().egress_proxies),
         )
         answer_provider_runtime = AnswerProviderRuntimeFactory(
             session_factory=session_factory,

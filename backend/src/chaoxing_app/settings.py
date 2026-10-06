@@ -79,6 +79,13 @@ class AppSettings(BaseSettings):
         ge=0,
         allow_inf_nan=False,
     )
+    # Outbound egress proxy pool (comma-separated http(s)://host:port list).
+    # Each task probes the pool for reachability, drops unreachable exits, and
+    # picks one healthy proxy at random to spread Chaoxing traffic across
+    # Tailscale residential exit nodes; a session fails over to another exit
+    # when a request dies with a connection error. Empty falls back to the
+    # process environment's HTTP_PROXY/HTTPS_PROXY (default behavior).
+    egress_proxies: tuple[str, ...] = ()
     wechat_appid: str = ""
     wechat_secret: str = ""
     dev_login_enabled: bool = False
@@ -93,6 +100,27 @@ class AppSettings(BaseSettings):
                 raise ValueError(f"invalid HTTP origin: {value!r}")
             if origin not in normalized:
                 normalized.append(origin)
+        return tuple(normalized)
+
+    @field_validator("egress_proxies", mode="before")
+    @classmethod
+    def parse_egress_proxies(cls, value: object) -> tuple[str, ...]:
+        if isinstance(value, str):
+            raw = [item.strip() for item in value.split(",") if item.strip()]
+        elif isinstance(value, (list, tuple)):
+            raw = [str(item) for item in value]
+        else:
+            raise ValueError(
+                "egress proxies must be a comma-separated string or a list, "
+                f"got {type(value).__name__}"
+            )
+        normalized: list[str] = []
+        for item in raw:
+            proxy = normalize_http_origin(item)
+            if proxy is None:
+                raise ValueError(f"invalid HTTP proxy URL: {item!r}")
+            if proxy not in normalized:
+                normalized.append(proxy)
         return tuple(normalized)
 
     @model_validator(mode="after")
