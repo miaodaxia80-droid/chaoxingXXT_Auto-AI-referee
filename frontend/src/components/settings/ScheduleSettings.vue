@@ -67,6 +67,13 @@ const saveSettings = useMutation({
   },
 })
 
+const hasChanges = computed(() => {
+  if (!saved.value) return false
+  return (Object.keys(saved.value) as (keyof UpdateSystemSettingsInput)[]).some(
+    (key) => form[key] !== saved.value?.[key],
+  )
+})
+
 watch(
   settings.data,
   (value) => {
@@ -74,13 +81,6 @@ watch(
   },
   { immediate: true },
 )
-
-const hasChanges = computed(() => {
-  if (!saved.value) return false
-  return (Object.keys(saved.value) as (keyof UpdateSystemSettingsInput)[]).some(
-    (key) => form[key] !== saved.value?.[key],
-  )
-})
 
 watch(hasChanges, (value) => emit('dirty-change', value), { immediate: true })
 

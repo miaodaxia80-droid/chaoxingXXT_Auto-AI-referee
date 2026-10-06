@@ -651,7 +651,7 @@ test('account credential forms opt out of saved administrator autofill', async (
   await mockApi(page, { authenticated: true })
   await page.goto('/accounts')
 
-  await page.getByRole('button', { name: '添加账号' }).click()
+  await page.locator('.list-toolbar').getByRole('button', { name: '添加账号' }).click()
   const accountForm = page.getByRole('heading', { name: '添加学习通账号' }).locator('..').locator('form')
   await expect(accountForm).toHaveAttribute('autocomplete', 'off')
   await expect(accountForm.locator('input[name="cx-create-account"]')).toHaveAttribute(
@@ -800,6 +800,8 @@ test('theme choice persists and system mode follows the OS preference', async ({
 
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark')
   await page.getByTestId('theme-menu').click()
+  await page.mouse.move(0, 0)
+  await expect(page.locator('.n-tooltip')).toBeHidden()
   await page.getByText('浅色', { exact: true }).click()
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'light')
   await expect.poll(() => page.evaluate(() => localStorage.getItem('cx.theme'))).toBe('light')
@@ -807,6 +809,8 @@ test('theme choice persists and system mode follows the OS preference', async ({
   await page.reload()
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'light')
   await page.getByTestId('theme-menu').click()
+  await page.mouse.move(0, 0)
+  await expect(page.locator('.n-tooltip')).toBeHidden()
   await page.getByText('跟随系统', { exact: true }).click()
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark')
   await expect.poll(() => page.evaluate(() => localStorage.getItem('cx.theme'))).toBe('system')
