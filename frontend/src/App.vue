@@ -7,10 +7,13 @@ import {
   dateZhCN,
   zhCN,
 } from 'naive-ui'
+import { computed } from 'vue'
 
 import { useTheme } from '@/stores/theme'
+import { naiveThemeOverrides } from '@/styles/naiveTheme'
 
 const theme = useTheme()
+const themeOverrides = computed(() => naiveThemeOverrides(theme.isDark.value))
 </script>
 
 <template>
@@ -18,6 +21,7 @@ const theme = useTheme()
     :locale="zhCN"
     :date-locale="dateZhCN"
     :theme="theme.isDark.value ? darkTheme : null"
+    :theme-overrides="themeOverrides"
   >
     <NDialogProvider>
       <NMessageProvider>

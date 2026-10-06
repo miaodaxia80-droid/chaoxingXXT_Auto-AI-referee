@@ -1,8 +1,11 @@
 import type {
   AnswerIntegration,
+  IntegrationTestResult,
   NotificationChannelKind,
   NotificationIntegration,
   StudyTask,
+  StudyTaskDetail,
+  SystemEvent,
   SystemSettings,
   UpdateAnswerIntegrationInput,
   UpdateNotificationIntegrationInput,
@@ -137,4 +140,46 @@ export function updateNotificationIntegration(
       body: JSON.stringify(input),
     },
   )
+}
+
+export function getTask(taskId: string): Promise<StudyTaskDetail> {
+  return apiRequest<StudyTaskDetail>(`/tasks/${encodeURIComponent(taskId)}`)
+}
+
+export function getTaskEvents(taskId: string): Promise<SystemEvent[]> {
+  return apiRequest<SystemEvent[]>(`/tasks/${encodeURIComponent(taskId)}/events?limit=200`)
+}
+
+export function testAnswerIntegration(): Promise<IntegrationTestResult> {
+  return apiRequest<IntegrationTestResult>('/settings/integrations/answer/test', {
+    method: 'POST',
+  })
+}
+
+export function testNotificationIntegration(
+  channel: NotificationChannelKind,
+): Promise<IntegrationTestResult> {
+  return apiRequest<IntegrationTestResult>(
+    `/settings/integrations/notifications/${channel}/test`,
+    { method: 'POST' },
+  )
+}
+
+const TEST_FAILURE_MESSAGES: Record<string, string> = {
+  configuration_invalid: '配置无效，请检查地址与凭据',
+  timeout: '请求超时，请检查网络或服务地址',
+  request_failed: '无法连接到服务',
+  provider_http_error: '服务返回了错误响应，请检查凭据',
+  provider_failed: '服务调用失败',
+  provider_rejected: '服务拒绝了本次请求',
+  no_answer: '服务未返回答案',
+  sender_failure: '发送失败',
+}
+
+export function integrationTestMessage(result: IntegrationTestResult): string {
+  if (result.ok) return `测试成功（${result.latency_ms} ms）`
+  if (result.reason.startsWith('http_')) {
+    return `服务返回 HTTP ${result.reason.slice(5)}，请检查配置`
+  }
+  return TEST_FAILURE_MESSAGES[result.reason] ?? '测试失败'
 }

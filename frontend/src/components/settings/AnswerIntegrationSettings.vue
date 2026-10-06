@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useMutation, useQuery, useQueryClient } from '@tanstack/vue-query'
-import { Bot, RefreshCw, Save, ShieldAlert } from 'lucide-vue-next'
+import { Bot, FlaskConical, RefreshCw, Save, Server } from 'lucide-vue-next'
 import {
   NAlert,
   NButton,
@@ -12,10 +12,9 @@ import {
   NInput,
   NSelect,
   NSlider,
-  NSpin,
+  NSkeleton,
   NSwitch,
   NTag,
-  NTooltip,
   useMessage,
 } from 'naive-ui'
 import { computed, reactive, ref, watch } from 'vue'
@@ -23,9 +22,12 @@ import { computed, reactive, ref, watch } from 'vue'
 import {
   ApiError,
   getAnswerIntegration,
+  integrationTestMessage,
+  testAnswerIntegration,
   updateAnswerIntegration,
 } from '@/api/client'
 import AnswerProfileFields from '@/components/settings/AnswerProfileFields.vue'
+import IconAction from '@/components/ui/IconAction.vue'
 import {
   cloneAnswerProfile,
   completeAnswerProfile,
@@ -36,8 +38,11 @@ import type {
   AnswerProfile,
   AnswerProviderKind,
   AnswerSubmitMode,
+  IntegrationTestResult,
   UpdateAnswerIntegrationInput,
 } from '@/api/types'
+
+const emit = defineEmits<{ 'dirty-change': [dirty: boolean] }>()
 
 interface AnswerForm {
   enabled: boolean
@@ -117,6 +122,7 @@ const answer = useQuery({
 const saveAnswer = useMutation({
   mutationFn: updateAnswerIntegration,
   async onSuccess(data) {
+    testResult.value = null
     applyAnswer(data)
     queryClient.setQueryData(queryKey, data)
     message.success('答案服务设置已保存')
@@ -208,6 +214,30 @@ const hasChanges = computed(() => {
   if (!saved.value) return false
   return JSON.stringify(formSnapshot(form)) !== JSON.stringify(formSnapshot(saved.value))
 })
+watch(hasChanges, (value) => emit('dirty-change', value), { immediate: true })
+
+const testResult = ref<IntegrationTestResult | null>(null)
+const testAnswer = useMutation({
+  mutationFn: testAnswerIntegration,
+  onMutate() {
+    testResult.value = null
+  },
+  onSuccess(result) {
+    testResult.value = result
+  },
+  onError(error) {
+    message.error(errorText(error, '测试请求失败'))
+  },
+})
+const canTest = computed(
+  () => saved.value?.enabled === true && !hasChanges.value && !saveAnswer.isPending.value,
+)
+const testDisabledReason = computed(() => {
+  if (saved.value?.enabled !== true) return '启用并保存自动答题后可测试'
+  if (hasChanges.value) return '请先保存更改'
+  return ''
+})
+
 const thresholdLabel = computed(() => `${Math.round(form.threshold * 100)}%`)
 const loadError = computed(() => errorText(answer.error.value, '答案服务设置读取失败'))
 
@@ -331,45 +361,34 @@ function errorText(error: unknown, fallback: string): string {
 </script>
 
 <template>
-  <section class="content-section integration-section">
-    <div class="section-heading integration-heading">
-      <div>
-        <h2>答案服务</h2>
-        <p>配置查题来源、答案可信度和提交策略</p>
-      </div>
-      <NTooltip trigger="hover">
-        <template #trigger>
-          <NButton
-            quaternary
-            circle
-            aria-label="刷新答案服务设置"
-            :loading="answer.isFetching.value"
-            @click="refresh"
-          >
-            <template #icon><RefreshCw /></template>
-          </NButton>
-        </template>
-        刷新答案服务设置
-      </NTooltip>
+  <section class="content-section flush settings-card">
+    <div class="settings-intro">
+      <p>配置查题来源、答案可信度与提交策略。密钥只写不读，留空即保持原值。</p>
+      <IconAction
+        label="刷新答案服务设置"
+        :icon="RefreshCw"
+        :loading="answer.isFetching.value"
+        @click="refresh"
+      />
     </div>
 
     <NAlert v-if="answer.isError.value" type="error" :bordered="false">
       {{ loadError }}
     </NAlert>
 
-    <div v-if="answer.isLoading.value" class="integration-loading">
-      <NSpin size="small" description="正在读取答案服务设置" />
+    <div v-if="answer.isLoading.value" class="settings-loading">
+      <NSkeleton text :repeat="6" />
     </div>
 
-    <NForm v-else-if="saved" class="integration-form" label-placement="top" @submit.prevent="submit">
-      <div class="integration-status-row">
-        <span class="integration-icon"><Bot :size="19" /></span>
-        <div class="integration-copy">
+    <NForm v-else-if="saved" label-placement="top" @submit.prevent="submit">
+      <div class="setting-row">
+        <span class="setting-icon"><Bot :size="18" /></span>
+        <div class="setting-copy">
           <strong>自动答题</strong>
-          <span>答案覆盖率不足时不会猜测或提交</span>
+          <span>答案覆盖率低于阈值时不会猜测或提交</span>
         </div>
-        <div class="status-control">
-          <NTag size="small" :type="form.enabled ? 'success' : 'default'">
+        <div class="setting-control">
+          <NTag size="small" :bordered="false" :type="form.enabled ? 'success' : 'default'">
             {{ form.enabled ? '已启用' : '已停用' }}
           </NTag>
           <NSwitch
@@ -381,7 +400,7 @@ function errorText(error: unknown, fallback: string): string {
         </div>
       </div>
 
-      <div class="integration-fields common-fields">
+      <div class="setting-fields common-fields">
         <NFormItem label="答案源">
           <NSelect v-model:value="form.provider" :options="providerOptions" />
         </NFormItem>
@@ -409,18 +428,19 @@ function errorText(error: unknown, fallback: string): string {
       </NAlert>
 
       <template v-else>
-        <div class="provider-heading">
-          <div>
+        <div class="setting-row provider-row">
+          <span class="setting-icon"><Server :size="18" /></span>
+          <div class="setting-copy">
             <strong>{{ providerNames[form.provider] }}</strong>
-            <span>密钥不会从服务端回填，留空将保持原值</span>
+            <span>连接参数与凭据</span>
           </div>
-          <NTag v-if="secretKind" size="small" :type="credentialPresent ? 'success' : 'warning'">
+          <NTag v-if="secretKind" size="small" :bordered="false" :type="credentialPresent ? 'success' : 'warning'">
             {{ credentialPresent ? '凭据已保存' : '未保存凭据' }}
           </NTag>
-          <NTag v-else size="small">无需凭据</NTag>
+          <NTag v-else size="small" :bordered="false">无需凭据</NTag>
         </div>
 
-        <div class="integration-fields provider-fields">
+        <div class="setting-fields">
           <NFormItem v-if="isEndpointProvider" label="服务地址">
             <NInput
               v-model:value="form.endpoint"
@@ -443,12 +463,13 @@ function errorText(error: unknown, fallback: string): string {
               <span>{{ form.search ? '已启用' : '已关闭' }}</span>
             </div>
           </NFormItem>
-          <NFormItem v-if="secretKind" :label="secretLabel" class="secret-field">
+          <NFormItem v-if="secretKind" :label="secretLabel" class="full">
             <div class="secret-field-content">
               <NInput
                 v-model:value="secretValue"
                 type="password"
                 show-password-on="click"
+                :input-props="{ autocomplete: 'new-password' }"
                 :placeholder="credentialPresent ? '已保存，留空保持不变' : `请输入${secretLabel}`"
                 :disabled="clearSecret"
               />
@@ -457,25 +478,24 @@ function errorText(error: unknown, fallback: string): string {
               </NCheckbox>
             </div>
           </NFormItem>
-        </div>
-
-        <NCollapse class="advanced-settings" arrow-placement="right">
-          <NCollapseItem title="高级设置" name="endpoint-policy">
-            <NAlert type="warning" :bordered="false">
-              允许不安全地址后，答案服务可以访问 HTTP、本机、.local 或私网地址，可能暴露内网服务。仅在地址由你控制且确实需要时开启。
-            </NAlert>
-            <div class="unsafe-setting-row">
-              <div>
-                <strong>允许不安全服务地址</strong>
-                <span>默认仅允许公网 HTTPS 地址</span>
+          <NCollapse class="advanced-settings full" arrow-placement="right">
+            <NCollapseItem title="高级设置" name="endpoint-policy">
+              <NAlert type="warning" :bordered="false">
+                允许不安全地址后，答案服务可以访问 HTTP、本机、.local 或私网地址，可能暴露内网服务。仅在地址由你控制且确实需要时开启。
+              </NAlert>
+              <div class="unsafe-setting-row">
+                <div class="setting-copy">
+                  <strong>允许不安全服务地址</strong>
+                  <span>默认仅允许公网 HTTPS 地址</span>
+                </div>
+                <NSwitch
+                  v-model:value="form.allowUnsafeEndpoint"
+                  aria-label="允许不安全服务地址"
+                />
               </div>
-              <NSwitch
-                v-model:value="form.allowUnsafeEndpoint"
-                aria-label="允许不安全服务地址"
-              />
-            </div>
-          </NCollapseItem>
-        </NCollapse>
+            </NCollapseItem>
+          </NCollapse>
+        </div>
       </template>
 
       <AnswerProfileFields
@@ -483,7 +503,35 @@ function errorText(error: unknown, fallback: string): string {
         :model-capable="supportsModelSelection"
       />
 
-      <div class="integration-actions">
+      <NAlert
+        v-if="testResult"
+        class="answer-test-result"
+        :type="testResult.ok ? 'success' : 'error'"
+        :bordered="false"
+        :title="integrationTestMessage(testResult)"
+        closable
+        @close="testResult = null"
+      >
+        <template v-if="testResult.ok && testResult.answer">
+          测试题「中华人民共和国的首都是哪座城市？」返回：{{ testResult.answer }}
+        </template>
+        <template v-else-if="!testResult.ok">请检查答案源地址、凭据和网络后重试。</template>
+      </NAlert>
+
+      <div class="sticky-actions">
+        <div class="footer-left">
+          <NButton
+            quaternary
+            :disabled="!canTest"
+            :loading="testAnswer.isPending.value"
+            :title="testDisabledReason"
+            @click="testAnswer.mutate()"
+          >
+            <template #icon><FlaskConical /></template>
+            测试连接
+          </NButton>
+          <span v-if="hasChanges" class="dirty-hint">有未保存的更改</span>
+        </div>
         <NButton :disabled="!hasChanges || saveAnswer.isPending.value" @click="resetForm">
           撤销更改
         </NButton>
@@ -502,118 +550,12 @@ function errorText(error: unknown, fallback: string): string {
 </template>
 
 <style scoped>
-.integration-section {
-  max-width: 860px;
-  padding: 0;
-  overflow: hidden;
-}
-
-.integration-heading {
-  min-height: 72px;
-  margin: 0;
-  padding: 16px 20px;
-  border-bottom: 1px solid var(--color-border-soft);
-}
-
-.integration-section > :deep(.n-alert) {
-  border-radius: 0;
-}
-
-.integration-loading {
-  display: grid;
-  min-height: 220px;
-  place-items: center;
-}
-
-.integration-form {
-  min-width: 0;
-}
-
-.integration-status-row {
-  display: grid;
-  grid-template-columns: 38px minmax(0, 1fr) auto;
-  min-height: 76px;
-  align-items: center;
-  gap: 12px;
-  padding: 14px 20px;
-  border-bottom: 1px solid var(--color-border-soft);
-}
-
-.integration-icon {
-  display: grid;
-  width: 36px;
-  height: 36px;
-  place-items: center;
-  border-radius: 6px;
-  background: var(--color-accent-muted);
-  color: var(--color-accent);
-}
-
-.integration-copy,
-.provider-heading > div,
-.unsafe-setting-row > div {
-  min-width: 0;
-}
-
-.integration-copy strong,
-.integration-copy span,
-.provider-heading strong,
-.provider-heading span,
-.unsafe-setting-row strong,
-.unsafe-setting-row span {
-  display: block;
-  overflow-wrap: anywhere;
-}
-
-.integration-copy strong,
-.provider-heading strong,
-.unsafe-setting-row strong {
-  color: var(--color-text-strong);
-  font-size: 13px;
-}
-
-.integration-copy span,
-.provider-heading span,
-.unsafe-setting-row span {
-  margin-top: 4px;
-  color: var(--color-text-muted);
-  font-size: 11px;
-  line-height: 1.5;
-}
-
-.status-control,
-.inline-switch-control {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-}
-
-.integration-fields {
-  display: grid;
-  gap: 14px;
-  padding: 18px 20px 2px;
-}
-
 .common-fields {
   grid-template-columns: repeat(2, minmax(0, 1fr)) minmax(190px, 1.2fr);
-  border-bottom: 1px solid var(--color-border-soft);
 }
 
-.provider-fields {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-}
-
-.provider-fields :deep(.secret-field) {
-  grid-column: 1 / -1;
-}
-
-.provider-heading {
-  display: flex;
-  min-height: 60px;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 13px 20px 0;
+.provider-row {
+  border-bottom: 0;
 }
 
 .field-label-with-value {
@@ -626,16 +568,19 @@ function errorText(error: unknown, fallback: string): string {
 
 .field-label-with-value strong {
   color: var(--color-accent);
-  font-size: 12px;
+  font-size: var(--fs-xs);
 }
 
 .inline-switch-control {
+  display: flex;
   min-height: 34px;
+  align-items: center;
+  gap: 9px;
 }
 
 .inline-switch-control span {
   color: var(--color-text-muted);
-  font-size: 12px;
+  font-size: var(--fs-xs);
 }
 
 .secret-field-content {
@@ -645,22 +590,17 @@ function errorText(error: unknown, fallback: string): string {
 }
 
 .provider-switch-note {
-  margin: 18px 20px;
+  margin: 16px 20px;
 }
 
 .advanced-settings {
-  border-top: 1px solid var(--color-border-soft);
-  padding: 5px 20px 8px;
+  margin-bottom: 14px;
 }
 
 .advanced-settings :deep(.n-collapse-item__header-main) {
   color: var(--color-text-muted);
-  font-size: 12px;
-  font-weight: 650;
-}
-
-.advanced-settings :deep(.n-collapse-item__content-inner) {
-  padding-top: 2px;
+  font-size: var(--fs-sm);
+  font-weight: 600;
 }
 
 .unsafe-setting-row {
@@ -671,67 +611,41 @@ function errorText(error: unknown, fallback: string): string {
   padding: 14px 2px 4px;
 }
 
-.integration-actions {
+.answer-test-result {
+  margin: 14px 20px;
+}
+
+.footer-left {
   display: flex;
-  min-height: 68px;
+  min-width: 0;
   align-items: center;
-  justify-content: flex-end;
-  gap: 8px;
-  border-top: 1px solid var(--color-border-soft);
-  background: var(--color-surface-muted);
-  padding: 12px 20px;
+  gap: 10px;
+  margin-right: auto;
+}
+
+.footer-left .dirty-hint {
+  margin-right: 0;
 }
 
 @media (max-width: 720px) {
-  .integration-heading,
-  .integration-status-row,
-  .provider-heading,
-  .integration-actions {
-    padding-right: 14px;
-    padding-left: 14px;
-  }
-
-  .common-fields,
-  .provider-fields {
+  .common-fields {
     grid-template-columns: minmax(0, 1fr);
-    padding-right: 14px;
-    padding-left: 14px;
   }
 
-  .provider-fields :deep(.secret-field) {
-    grid-column: auto;
-  }
-
-  .provider-switch-note {
+  .provider-switch-note,
+  .answer-test-result {
     margin-right: 14px;
     margin-left: 14px;
-  }
-
-  .advanced-settings {
-    padding-right: 14px;
-    padding-left: 14px;
   }
 }
 
 @media (max-width: 460px) {
-  .integration-status-row {
-    grid-template-columns: 38px minmax(0, 1fr);
+  .sticky-actions {
+    flex-wrap: wrap;
   }
 
-  .status-control {
-    grid-column: 2;
-    justify-content: space-between;
-  }
-
-  .provider-heading {
-    align-items: flex-start;
-    flex-direction: column;
-    padding-bottom: 4px;
-  }
-
-  .integration-actions > :deep(.n-button) {
-    min-width: 0;
-    flex: 1;
+  .footer-left {
+    width: 100%;
   }
 }
 </style>

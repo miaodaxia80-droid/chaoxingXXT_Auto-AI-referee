@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useMutation, useQuery, useQueryClient } from '@tanstack/vue-query'
-import { BellRing, MessageCircle, RefreshCw, Save, Send, Smartphone } from 'lucide-vue-next'
+import { BellRing, MessageCircle, RefreshCw, Save, Send, SendHorizontal, Smartphone } from 'lucide-vue-next'
 import {
   NAlert,
   NButton,
@@ -8,10 +8,9 @@ import {
   NForm,
   NFormItem,
   NInput,
-  NSpin,
+  NSkeleton,
   NSwitch,
   NTag,
-  NTooltip,
   useMessage,
 } from 'naive-ui'
 import { computed, reactive, ref, watch } from 'vue'
@@ -20,13 +19,19 @@ import type { Component } from 'vue'
 import {
   ApiError,
   getNotificationIntegrations,
+  integrationTestMessage,
+  testNotificationIntegration,
   updateNotificationIntegration,
 } from '@/api/client'
 import type {
+  IntegrationTestResult,
   NotificationChannelKind,
   NotificationIntegration,
   UpdateNotificationIntegrationInput,
 } from '@/api/types'
+import IconAction from '@/components/ui/IconAction.vue'
+
+const emit = defineEmits<{ 'dirty-change': [dirty: boolean] }>()
 
 interface NotificationForm {
   enabled: boolean
@@ -123,7 +128,7 @@ const saveNotification = useMutation({
       if (!current) return [data]
       return current.map((item) => (item.channel === data.channel ? data : item))
     })
-    message.success(`${channelMeta[data.channel].label}设置已保存`)
+    delete testResults[data.channel]
   },
   async onError(error, variables) {
     if (error instanceof ApiError && error.status === 409) {
@@ -262,17 +267,56 @@ function buildPayload(channel: NotificationChannelKind): UpdateNotificationInteg
   return payload
 }
 
-function submitChannel(channel: NotificationChannelKind) {
-  if (!hasChanges(channel) || saveNotification.isPending.value || !validateChannel(channel)) return
-  saveNotification.mutate({ channel, input: buildPayload(channel) })
+const dirtyChannels = computed(() => channelOrder.filter((channel) => hasChanges(channel)))
+const anyDirty = computed(() => dirtyChannels.value.length > 0)
+watch(anyDirty, (value) => emit('dirty-change', value), { immediate: true })
+
+async function saveAll() {
+  if (!anyDirty.value || saveNotification.isPending.value) return
+  const channels = dirtyChannels.value
+  if (!channels.every(validateChannel)) return
+  const savedLabels: string[] = []
+  for (const channel of channels) {
+    try {
+      await saveNotification.mutateAsync({ channel, input: buildPayload(channel) })
+      savedLabels.push(channelMeta[channel].label)
+    } catch {
+      break
+    }
+  }
+  if (savedLabels.length) message.success(`已保存：${savedLabels.join('、')}`)
 }
 
-function resetChannel(channel: NotificationChannelKind) {
-  Object.assign(forms[channel], cloneForm(persisted[channel]))
+function resetAll() {
+  for (const channel of channelOrder) Object.assign(forms[channel], cloneForm(persisted[channel]))
 }
 
-function isSaving(channel: NotificationChannelKind): boolean {
-  return saveNotification.isPending.value && saveNotification.variables.value?.channel === channel
+const testResults = reactive<Partial<Record<NotificationChannelKind, IntegrationTestResult>>>({})
+const testNotification = useMutation({
+  mutationFn: (channel: NotificationChannelKind) => testNotificationIntegration(channel),
+  onMutate(channel) {
+    delete testResults[channel]
+  },
+  onSuccess(result, channel) {
+    testResults[channel] = result
+  },
+  onError(error) {
+    message.error(errorText(error, '测试请求失败'))
+  },
+})
+
+function canTest(channel: NotificationChannelKind): boolean {
+  return persisted[channel].enabled && isConfigured(channel) && !hasChanges(channel)
+}
+
+function testTooltip(channel: NotificationChannelKind): string {
+  if (!persisted[channel].enabled || !isConfigured(channel)) return '启用并保存后可发送测试'
+  if (hasChanges(channel)) return '请先保存更改'
+  return '发送测试消息'
+}
+
+function isTesting(channel: NotificationChannelKind): boolean {
+  return testNotification.isPending.value && testNotification.variables.value === channel
 }
 
 async function refresh() {
@@ -291,50 +335,49 @@ function errorText(error: unknown, fallback: string): string {
 </script>
 
 <template>
-  <section class="content-section notification-section">
-    <div class="section-heading notification-heading">
-      <div>
-        <h2>任务通知</h2>
-        <p>任务结束后可同时向多个渠道发送结果</p>
-      </div>
-      <NTooltip trigger="hover">
-        <template #trigger>
-          <NButton
-            quaternary
-            circle
-            aria-label="刷新通知设置"
-            :loading="notifications.isFetching.value"
-            @click="refresh"
-          >
-            <template #icon><RefreshCw /></template>
-          </NButton>
-        </template>
-        刷新通知设置
-      </NTooltip>
+  <section class="content-section flush settings-card">
+    <div class="settings-intro">
+      <p>任务结束后，同时向所有已启用的渠道推送结果。凭据只写不读，留空即保持原值。</p>
+      <IconAction
+        label="刷新通知设置"
+        :icon="RefreshCw"
+        :loading="notifications.isFetching.value"
+        @click="refresh"
+      />
     </div>
 
     <NAlert v-if="notifications.isError.value" type="error" :bordered="false">
       {{ loadError }}
     </NAlert>
 
-    <div v-if="notifications.isLoading.value" class="notification-loading">
-      <NSpin size="small" description="正在读取通知设置" />
+    <div v-if="notifications.isLoading.value" class="settings-loading">
+      <NSkeleton text :repeat="6" />
     </div>
 
-    <NForm v-else-if="initialized" label-placement="top">
+    <NForm v-else-if="initialized" label-placement="top" @submit.prevent="saveAll">
       <div v-for="channel in channelOrder" :key="channel" class="notification-channel">
-        <div class="channel-heading">
-          <span class="channel-icon">
+        <div class="setting-row channel-heading">
+          <span class="setting-icon">
             <component :is="channelMeta[channel].icon" :size="18" />
           </span>
-          <div class="channel-copy">
-            <strong>{{ channelMeta[channel].label }}</strong>
+          <div class="setting-copy">
+            <strong>
+              {{ channelMeta[channel].label }}
+              <span v-if="hasChanges(channel)" class="dirty-dot" aria-label="有未保存的更改" />
+            </strong>
             <span>{{ channelMeta[channel].description }}</span>
           </div>
-          <div class="channel-state">
-            <NTag size="small" :type="isConfigured(channel) ? 'success' : 'warning'">
-              {{ isConfigured(channel) ? '凭据已保存' : '未配置' }}
+          <div class="setting-control">
+            <NTag size="small" :bordered="false" :type="isConfigured(channel) ? 'success' : 'default'">
+              {{ isConfigured(channel) ? '已配置' : '未配置' }}
             </NTag>
+            <IconAction
+              :label="testTooltip(channel)"
+              :icon="SendHorizontal"
+              :disabled="!canTest(channel)"
+              :loading="isTesting(channel)"
+              @click="testNotification.mutate(channel)"
+            />
             <NSwitch
               :value="forms[channel].enabled"
               :aria-label="`启用${channelMeta[channel].label}通知`"
@@ -343,13 +386,14 @@ function errorText(error: unknown, fallback: string): string {
           </div>
         </div>
 
-        <div v-if="channel === 'telegram'" class="channel-fields telegram-fields">
+        <div v-if="channel === 'telegram'" class="setting-fields channel-fields">
           <NFormItem label="Bot Token">
             <div class="secret-control">
               <NInput
                 v-model:value="forms[channel].botToken"
                 type="password"
                 show-password-on="click"
+                :input-props="{ autocomplete: 'new-password' }"
                 :disabled="forms[channel].clearBotToken"
                 :placeholder="forms[channel].hasBotToken ? '已保存，留空保持不变' : '123456:bot-token'"
               />
@@ -368,6 +412,7 @@ function errorText(error: unknown, fallback: string): string {
                 v-model:value="forms[channel].chatId"
                 type="password"
                 show-password-on="click"
+                :input-props="{ autocomplete: 'off' }"
                 :disabled="forms[channel].clearChatId"
                 :placeholder="forms[channel].hasChatId ? '已保存，留空保持不变' : '例如 -100123456789'"
               />
@@ -382,13 +427,14 @@ function errorText(error: unknown, fallback: string): string {
           </NFormItem>
         </div>
 
-        <div v-else class="channel-fields">
+        <div v-else class="setting-fields channel-fields single">
           <NFormItem label="Webhook 地址">
             <div class="secret-control">
               <NInput
                 v-model:value="forms[channel].webhookUrl"
                 type="password"
                 show-password-on="click"
+                :input-props="{ autocomplete: 'off' }"
                 :disabled="forms[channel].clearWebhookUrl"
                 :placeholder="forms[channel].hasWebhookUrl ? '已保存，留空保持不变' : '必须使用 HTTPS 地址'"
               />
@@ -403,117 +449,60 @@ function errorText(error: unknown, fallback: string): string {
           </NFormItem>
         </div>
 
-        <div class="channel-actions">
-          <NButton
-            size="small"
-            :disabled="!hasChanges(channel) || isSaving(channel)"
-            @click="resetChannel(channel)"
-          >
-            撤销
-          </NButton>
-          <NButton
-            size="small"
-            type="primary"
-            :loading="isSaving(channel)"
-            :disabled="!hasChanges(channel)"
-            @click="submitChannel(channel)"
-          >
-            <template #icon><Save /></template>
-            保存
-          </NButton>
-        </div>
+        <NAlert
+          v-if="testResults[channel]"
+          class="channel-test-result"
+          :type="testResults[channel]!.ok ? 'success' : 'error'"
+          :bordered="false"
+          closable
+          @close="delete testResults[channel]"
+        >
+          {{ testResults[channel]!.ok ? '测试消息已发送，请在对应应用中确认收到。' : integrationTestMessage(testResults[channel]!) }}
+        </NAlert>
+      </div>
+
+      <div class="sticky-actions">
+        <span v-if="anyDirty" class="dirty-hint">
+          {{ dirtyChannels.map((channel) => channelMeta[channel].label).join('、') }} 有未保存的更改
+        </span>
+        <NButton :disabled="!anyDirty || saveNotification.isPending.value" @click="resetAll">
+          撤销更改
+        </NButton>
+        <NButton
+          attr-type="submit"
+          type="primary"
+          :loading="saveNotification.isPending.value"
+          :disabled="!anyDirty"
+        >
+          <template #icon><Save /></template>
+          保存
+        </NButton>
       </div>
     </NForm>
   </section>
 </template>
 
 <style scoped>
-.notification-section {
-  max-width: 860px;
-  padding: 0;
-  overflow: hidden;
-}
-
-.notification-heading {
-  min-height: 72px;
-  margin: 0;
-  padding: 16px 20px;
-  border-bottom: 1px solid var(--color-border-soft);
-}
-
-.notification-section > :deep(.n-alert) {
-  border-radius: 0;
-}
-
-.notification-loading {
-  display: grid;
-  min-height: 220px;
-  place-items: center;
-}
-
 .notification-channel {
   border-bottom: 1px solid var(--color-border-soft);
 }
 
-.notification-channel:last-child {
+.notification-channel:last-of-type {
   border-bottom: 0;
 }
 
 .channel-heading {
-  display: grid;
-  grid-template-columns: 38px minmax(0, 1fr) auto;
-  min-height: 72px;
-  align-items: center;
-  gap: 12px;
-  padding: 13px 20px;
-}
-
-.channel-icon {
-  display: grid;
-  width: 36px;
-  height: 36px;
-  place-items: center;
-  border-radius: 6px;
-  background: var(--color-accent-muted);
-  color: var(--color-accent);
-}
-
-.channel-copy {
-  min-width: 0;
-}
-
-.channel-copy strong,
-.channel-copy span {
-  display: block;
-  overflow-wrap: anywhere;
-}
-
-.channel-copy strong {
-  color: var(--color-text-strong);
-  font-size: 13px;
-}
-
-.channel-copy span {
-  margin-top: 4px;
-  color: var(--color-text-muted);
-  font-size: 11px;
-  line-height: 1.5;
-}
-
-.channel-state {
-  display: flex;
-  align-items: center;
-  gap: 9px;
+  border-bottom: 0;
 }
 
 .channel-fields {
-  padding: 0 20px 0 70px;
+  border-bottom: 0;
+  background: transparent;
+  padding-top: 0;
 }
 
-.telegram-fields {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 14px;
+.channel-fields.single {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .secret-control {
@@ -522,46 +511,38 @@ function errorText(error: unknown, fallback: string): string {
   gap: 7px;
 }
 
-.channel-actions {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 8px;
-  padding: 0 20px 14px 70px;
+.dirty-dot {
+  display: inline-block !important;
+  width: 6px;
+  height: 6px;
+  margin-left: 6px;
+  border-radius: 50%;
+  background: var(--color-warning-strong);
+  vertical-align: middle;
+}
+
+.channel-test-result {
+  margin: 0 20px 14px 70px;
 }
 
 @media (max-width: 680px) {
-  .notification-heading,
-  .channel-heading,
-  .channel-actions {
-    padding-right: 14px;
-    padding-left: 14px;
-  }
-
   .channel-fields {
-    padding-right: 14px;
-    padding-left: 14px;
+    padding-top: 0;
   }
 
-  .telegram-fields {
-    grid-template-columns: minmax(0, 1fr);
-    gap: 0;
+  .channel-test-result {
+    margin: 0 14px 14px;
   }
 }
 
 @media (max-width: 460px) {
   .channel-heading {
-    grid-template-columns: 38px minmax(0, 1fr);
+    grid-template-columns: 36px minmax(0, 1fr);
   }
 
-  .channel-state {
+  .channel-heading .setting-control {
     grid-column: 2;
     justify-content: space-between;
-  }
-
-  .channel-actions > :deep(.n-button) {
-    min-width: 0;
-    flex: 1;
   }
 }
 </style>
