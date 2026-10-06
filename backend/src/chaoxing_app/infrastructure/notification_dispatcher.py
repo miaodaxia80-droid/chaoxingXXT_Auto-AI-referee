@@ -77,7 +77,7 @@ class NotificationSenderBuilder(Protocol):
     ) -> NotificationSender: ...
 
 
-def _build_sender(
+def build_notification_sender(
     configuration: NotificationRuntimeConfiguration,
     session: requests.Session,
 ) -> NotificationSender:
@@ -199,7 +199,7 @@ class NotificationDispatcher:
         session_factory: sessionmaker[Session],
         secret_box: SecretBox,
         config: NotificationDispatcherConfig | None = None,
-        sender_builder: NotificationSenderBuilder = _build_sender,
+        sender_builder: NotificationSenderBuilder = build_notification_sender,
         owner_id: str | None = None,
         provider_session_factory: Callable[[], requests.Session] = requests.Session,
     ) -> None:

@@ -243,7 +243,7 @@ class AnswerProviderRuntimeFactory:
                 models = profile.models
                 if ensemble_enabled and models:
                     providers = [
-                        self._build_provider(
+                        build_answer_provider(
                             configuration,
                             new_provider_session(),
                             model_override=model,
@@ -252,7 +252,7 @@ class AnswerProviderRuntimeFactory:
                     ]
                     referee_model = profile.referee_model
                     referee = (
-                        self._build_provider(
+                        build_answer_provider(
                             configuration,
                             new_provider_session(),
                             model_override=referee_model,
@@ -266,7 +266,7 @@ class AnswerProviderRuntimeFactory:
                         max_workers=profile.max_workers,
                     )
                 else:
-                    provider = self._build_provider(configuration, new_provider_session())
+                    provider = build_answer_provider(configuration, new_provider_session())
                 search_context = (
                     self._search_context_factory(new_provider_session())
                     if profile.web_search_enabled
@@ -348,47 +348,47 @@ class AnswerProviderRuntimeFactory:
             return None
         return enabled, revision, provider
 
-    @staticmethod
-    def _build_provider(
-        configuration: AnswerRuntimeConfiguration,
-        session: requests.Session,
-        *,
-        model_override: str = "",
-    ) -> AnswerProvider:
-        if configuration.provider is AnswerProviderKind.YANXI:
-            return YanxiAnswerProvider(
-                tokens=configuration.credential or "",
-                endpoint=configuration.endpoint,
-                session=session,
-                allow_unsafe_endpoint=configuration.allow_unsafe_endpoint,
-            )
-        if configuration.provider is AnswerProviderKind.LIKE:
-            return LikeAnswerProvider(
-                token=configuration.credential or "",
-                endpoint=configuration.endpoint,
-                model=model_override or configuration.model,
-                search=configuration.search,
-                session=session,
-                allow_unsafe_endpoint=configuration.allow_unsafe_endpoint,
-            )
-        if configuration.provider is AnswerProviderKind.TIKU_ADAPTER:
-            return TikuAdapterAnswerProvider(
-                endpoint=configuration.endpoint,
-                session=session,
-                allow_unsafe_endpoint=configuration.allow_unsafe_endpoint,
-            )
-        if configuration.provider is AnswerProviderKind.OPENAI_COMPATIBLE:
-            return OpenAICompatibleAnswerProvider(
-                api_key=configuration.credential or "",
-                base_url=configuration.base_url,
-                model=model_override or configuration.model,
-                session=session,
-                allow_unsafe_endpoint=configuration.allow_unsafe_endpoint,
-            )
-        return SiliconFlowAnswerProvider(
+
+def build_answer_provider(
+    configuration: AnswerRuntimeConfiguration,
+    session: requests.Session,
+    *,
+    model_override: str = "",
+) -> AnswerProvider:
+    if configuration.provider is AnswerProviderKind.YANXI:
+        return YanxiAnswerProvider(
+            tokens=configuration.credential or "",
+            endpoint=configuration.endpoint,
+            session=session,
+            allow_unsafe_endpoint=configuration.allow_unsafe_endpoint,
+        )
+    if configuration.provider is AnswerProviderKind.LIKE:
+        return LikeAnswerProvider(
+            token=configuration.credential or "",
+            endpoint=configuration.endpoint,
+            model=model_override or configuration.model,
+            search=configuration.search,
+            session=session,
+            allow_unsafe_endpoint=configuration.allow_unsafe_endpoint,
+        )
+    if configuration.provider is AnswerProviderKind.TIKU_ADAPTER:
+        return TikuAdapterAnswerProvider(
+            endpoint=configuration.endpoint,
+            session=session,
+            allow_unsafe_endpoint=configuration.allow_unsafe_endpoint,
+        )
+    if configuration.provider is AnswerProviderKind.OPENAI_COMPATIBLE:
+        return OpenAICompatibleAnswerProvider(
             api_key=configuration.credential or "",
             base_url=configuration.base_url,
             model=model_override or configuration.model,
             session=session,
             allow_unsafe_endpoint=configuration.allow_unsafe_endpoint,
         )
+    return SiliconFlowAnswerProvider(
+        api_key=configuration.credential or "",
+        base_url=configuration.base_url,
+        model=model_override or configuration.model,
+        session=session,
+        allow_unsafe_endpoint=configuration.allow_unsafe_endpoint,
+    )
