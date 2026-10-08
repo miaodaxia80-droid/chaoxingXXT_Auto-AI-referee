@@ -312,6 +312,45 @@ def test_client_scans_past_job_count_to_find_pending_cards() -> None:
     assert bundle.completed_attachment_count == 1
 
 
+def test_client_scans_past_empty_pages_until_pending_jobs_found() -> None:
+    # Sections can render empty card pages between materials; the pending job
+    # card must still be reached while the declared quota is unmet.
+    session = StubSession(
+        [
+            response("<script>mArg={\"attachments\":[{\"type\":\"document\",\"jobid\":\"d1\",\"property\":{\"module\":\"insertdoc\",\"objectid\":\"o\"}}]};</script>"),
+            response("<html></html>"),
+            response("<html></html>"),
+            response("<script>mArg={\"attachments\":[{\"job\":true,\"jobid\":\"bbs-1\",\"mid\":\"m-1\",\"property\":{\"module\":\"insertbbs\",\"isJob\":true,\"title\":\"讨论\"}}]};</script>"),
+            response("<html></html>"),
+            response("<html></html>"),
+        ]
+    )
+    client = ChapterTaskClient(session=cast(requests.Session, session))
+
+    bundle = client.fetch(course(), chapter(job_count=1))
+
+    assert len(session.calls) == 6
+    assert len(bundle.tasks) == 1
+    assert isinstance(bundle.tasks[0], DiscussionTaskPoint)
+    assert bundle.material_types == ("document/insertdoc",)
+
+
+def test_client_stops_empty_probe_when_no_jobs_declared() -> None:
+    session = StubSession(
+        [
+            response("<script>mArg={\"attachments\":[{\"type\":\"document\",\"jobid\":\"d1\",\"property\":{\"module\":\"insertdoc\",\"objectid\":\"o\"}}]};</script>"),
+            response("<html></html>"),
+            response("<html></html>"),
+        ]
+    )
+    client = ChapterTaskClient(session=cast(requests.Session, session))
+
+    bundle = client.fetch(course(), chapter(job_count=0))
+
+    assert len(session.calls) == 3
+    assert not bundle.tasks
+
+
 def test_client_detects_login_redirect_without_exposing_page() -> None:
     session = StubSession(
         [response("用户登录 private-page", url="https://passport2.chaoxing.com/login")]

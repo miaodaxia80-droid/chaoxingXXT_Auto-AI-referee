@@ -121,6 +121,10 @@ class TaskCardPage:
     completed_attachment_count: int
     unresolved_attachment_count: int = 0
     material_attachment_count: int = 0
+    # Compact "type/module" labels for unresolved or material attachments so a
+    # failed chapter can report what the platform actually sent.
+    unresolved_types: tuple[str, ...] = ()
+    material_types: tuple[str, ...] = ()
 
     @property
     def is_empty(self) -> bool:
@@ -141,6 +145,8 @@ class ChapterTaskBundle:
     attachment_count: int
     completed_attachment_count: int
     unresolved_attachment_count: int = 0
+    unresolved_types: tuple[str, ...] = ()
+    material_types: tuple[str, ...] = ()
 
 
 def _assigned_json_object(html: str) -> dict[str, object] | None:
@@ -287,6 +293,12 @@ def _discussion_details(page_html: str) -> dict[str, str]:
     return details
 
 
+def _card_label(card: Mapping[str, object]) -> str:
+    raw_type = _text(card.get("type")) or "none"
+    module = _text(_mapping(card.get("property")).get("module")) or "none"
+    return f"{raw_type}/{module}"
+
+
 def _parse_task(
     card: Mapping[str, object],
     discussion_details: Mapping[str, str],
@@ -404,6 +416,8 @@ def parse_task_card_page(html: str) -> TaskCardPage:
     unresolved = 0
     attachment_count = 0
     material_count = 0
+    unresolved_types: list[str] = []
+    material_types: list[str] = []
     discussion_details = _discussion_details(html)
     for raw_card in raw_attachments:
         card = _mapping(raw_card)
@@ -411,6 +425,7 @@ def parse_task_card_page(html: str) -> TaskCardPage:
             raise PlatformParseError("task cards", "attachment must be an object")
         raw_type = _text(card.get("type"))
         properties = _mapping(card.get("property"))
+        label = _card_label(card)
         job = card.get("job")
         if card.get("isPassed") is True:
             # Media pass marker outranks every other flag.
@@ -426,12 +441,14 @@ def parse_task_card_page(html: str) -> TaskCardPage:
         elif raw_type == "read":
             if properties.get("read") is True:
                 material_count += 1
+                material_types.append(label)
                 continue
             pending = True
         else:
             # Plain course material (课件/教案 attachments carry ``jobid`` but
             # no job marker) - not a task point at all.
             material_count += 1
+            material_types.append(label)
             continue
         attachment_count += 1
         if not pending:
@@ -442,6 +459,7 @@ def parse_task_card_page(html: str) -> TaskCardPage:
             tasks.append(task)
         else:
             unresolved += 1
+            unresolved_types.append(label)
     return TaskCardPage(
         tasks=tuple(tasks),
         defaults=_parse_defaults(payload.get("defaults")),
@@ -450,6 +468,8 @@ def parse_task_card_page(html: str) -> TaskCardPage:
         completed_attachment_count=completed,
         unresolved_attachment_count=unresolved,
         material_attachment_count=material_count,
+        unresolved_types=tuple(unresolved_types),
+        material_types=tuple(material_types),
     )
 
 
@@ -472,21 +492,26 @@ class ChapterTaskClient:
     def fetch(self, course: Course, chapter: Chapter) -> ChapterTaskBundle:
         # ``chapter.job_count`` only counts pending jobs and cannot bound the
         # number of card pages: one chapter section (课件/教案/讨论/视频…) is
-        # rendered per card, so keep scanning until the cards actually run out.
+        # rendered per card, and empty card pages can appear between sections.
+        # Stop early only once the declared pending jobs have been found;
+        # otherwise keep scanning so a later section is never missed.
         tasks: list[TaskPoint] = []
         defaults: JobDefaults | None = None
         attachment_count = 0
         completed_count = 0
         unresolved_count = 0
+        unresolved_types: list[str] = []
+        material_types: list[str] = []
         consecutive_empty = 0
 
         for card_number in range(_MAX_CARD_PAGES):
             page = self._fetch_page(course, chapter, card_number)
             if page.not_open:
                 return ChapterTaskBundle((), page.defaults, True, 0, 0)
+            pending_found = len(tasks) + unresolved_count
             if page.is_empty:
                 consecutive_empty += 1
-                if consecutive_empty >= 2:
+                if consecutive_empty >= 2 and pending_found >= chapter.job_count:
                     break
                 continue
             consecutive_empty = 0
@@ -495,6 +520,8 @@ class ChapterTaskClient:
             attachment_count += page.attachment_count
             completed_count += page.completed_attachment_count
             unresolved_count += page.unresolved_attachment_count
+            unresolved_types.extend(page.unresolved_types)
+            material_types.extend(page.material_types)
 
         return ChapterTaskBundle(
             tasks=tuple(tasks),
@@ -503,6 +530,8 @@ class ChapterTaskClient:
             attachment_count=attachment_count,
             completed_attachment_count=completed_count,
             unresolved_attachment_count=unresolved_count,
+            unresolved_types=tuple(unresolved_types),
+            material_types=tuple(material_types),
         )
 
     def _fetch_page(self, course: Course, chapter: Chapter, card_number: int) -> TaskCardPage:
