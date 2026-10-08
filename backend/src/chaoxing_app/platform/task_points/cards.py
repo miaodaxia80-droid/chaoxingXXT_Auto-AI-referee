@@ -166,7 +166,13 @@ def _mapping(value: object) -> Mapping[str, object]:
 
 
 def _text(value: object) -> str:
-    return value.strip() if isinstance(value, str) else ""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, bool):
+        return ""
+    if isinstance(value, int):
+        return str(value)
+    return ""
 
 
 def _integer(value: object, default: int = 0) -> int:
