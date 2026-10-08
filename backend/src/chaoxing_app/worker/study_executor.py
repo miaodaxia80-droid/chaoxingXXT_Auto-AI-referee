@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+import time
 from collections.abc import Callable, Mapping
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from contextlib import AbstractContextManager, suppress
@@ -221,7 +223,37 @@ def _normalize_reply_text(raw: object) -> str:
         return ""
     # Collapse to a single capped line so provider output stays a plain reply.
     text = " ".join(text.split())
-    return text[:200]
+    return text[:500]
+
+
+_MIN_REPLY_CHARS = re.compile(r"(?:至少|不少于|不低于)?\s*回复?\s*(\d+)\s*字|(\d+)\s*字\s*以上")
+
+
+def _min_reply_chars(message: str) -> int:
+    # Topics reject short replies with e.g. "该话题至少回复200字"; the rule is
+    # not exposed anywhere else, so the required length is parsed here.
+    for match in _MIN_REPLY_CHARS.finditer(message):
+        value = match.group(1) or match.group(2)
+        if value:
+            return int(value)
+    return 0
+
+
+_REPLY_FILLER = (
+    "通过本章节内容的学习，我对相关知识有了更加深入的理解，"  # noqa: RUF001
+    "也认识到只有把理论和实际结合起来才能真正掌握所学内容。"
+    "在今后的学习中，我会继续认真思考并积极运用本章节的知识。"  # noqa: RUF001
+)
+
+
+def _pad_reply_text(text: str, min_length: int) -> str:
+    while len(text) < min_length:
+        text += _REPLY_FILLER
+    return text
+
+
+def _default_reply_content(min_length: int) -> str:
+    return _pad_reply_text(DEFAULT_REPLY_CONTENT, min_length)
 
 
 class TaskPointRejected(PlatformError):
@@ -243,7 +275,13 @@ class StudyTaskExecutor:
         answer_provider_runtime: AnswerProviderRuntimePort | None = None,
         video_client_factory: VideoClientFactory = _video_client,
         playback_factory: PlaybackFactory = _playback_runner,
+        verify_delay_seconds: float = 2.5,
+        verify_max_attempts: int = 3,
     ) -> None:
+        if verify_delay_seconds < 0 or verify_max_attempts < 1:
+            raise ValueError("verification polling must be non-negative")
+        self._verify_delay_seconds = verify_delay_seconds
+        self._verify_max_attempts = verify_max_attempts
         self._engine = engine
         self._account_runtime = account_runtime
         self._chapter_client_factory = chapter_client_factory
@@ -643,19 +681,24 @@ class StudyTaskExecutor:
     ) -> tuple[ChapterStatus | None, str | None]:
         # Request success does not prove the platform marked the job done:
         # some endpoints answer a generic "already finished" for untracked
-        # jobs. Refetch the cards and only accept success once every pending
-        # job marker is actually gone.
-        try:
-            fresh = self._authenticated(
-                account,
-                lambda _client: chapter_client.fetch(course, chapter),
-                control,
-            )
-        except PlatformError:
-            return ChapterStatus.UNSUBMITTED, "completion_unverified"
-        remaining = len(fresh.tasks) + fresh.unresolved_attachment_count
-        if not remaining:
-            return None, None
+        # jobs, and real submissions take a moment to propagate. Refetch the
+        # cards a few times and only accept success once every pending job
+        # marker is actually gone.
+        remaining = 0
+        for attempt in range(self._verify_max_attempts):
+            if attempt:
+                time.sleep(self._verify_delay_seconds)
+            try:
+                fresh = self._authenticated(
+                    account,
+                    lambda _client: chapter_client.fetch(course, chapter),
+                    control,
+                )
+            except PlatformError:
+                return ChapterStatus.UNSUBMITTED, "completion_unverified"
+            remaining = len(fresh.tasks) + fresh.unresolved_attachment_count
+            if not remaining:
+                return None, None
         progress.record_event(
             chapter.chapter_id,
             kind="chapter.completion_unverified",
@@ -966,6 +1009,25 @@ class StudyTaskExecutor:
             ),
             control,
         )
+        if result.status is DiscussionReplyStatus.REJECTED:
+            # Some topics enforce a minimum reply length (e.g. "该话题至少回复
+            # 200字") that is only revealed by the rejection message. Grow the
+            # reply to the required size and retry once.
+            required = _min_reply_chars(result.message)
+            if required and len(content) < required:
+                content, source = self._discussion_reply_content(
+                    provider, task_point, course, min_length=required
+                )
+                result = self._authenticated(
+                    account,
+                    lambda _active: client.reply(
+                        course,
+                        task_point,
+                        knowledge_id=knowledge_id,
+                        content=content,
+                    ),
+                    control,
+                )
         if result.status in {
             DiscussionReplyStatus.POSTED,
             DiscussionReplyStatus.ALREADY_REPLIED,
@@ -995,13 +1057,20 @@ class StudyTaskExecutor:
         provider: AnswerProvider | None,
         task_point: DiscussionTaskPoint,
         course: Course,
+        *,
+        min_length: int = 0,
     ) -> tuple[str, str]:
         configured = getattr(provider, "configured", True) if provider is not None else False
         if provider is None or not configured:
-            return DEFAULT_REPLY_CONTENT, "default"
+            return _default_reply_content(min_length), "default"
+        length_rule = (
+            f"回复正文必须不少于{min_length}字"
+            if min_length > 0
+            else "80字以内"
+        )
         prompt_parts = [
-            "请针对下面的课堂讨论题写一条简短的中文回复"
-            "(80字以内, 只要回复正文, 不要称呼、序号和解释):"
+            "请针对下面的课堂讨论题写一条中文回复"
+            f"({length_rule}, 只要回复正文, 不要称呼、序号和解释):"
         ]
         if task_point.title.strip():
             prompt_parts.append(task_point.title.strip())
@@ -1016,10 +1085,12 @@ class StudyTaskExecutor:
         try:
             raw = provider.answer(question, course_context=course.title)
         except Exception:
-            return DEFAULT_REPLY_CONTENT, "default"
+            return _default_reply_content(min_length), "default"
         text = _normalize_reply_text(raw)
         if not text:
-            return DEFAULT_REPLY_CONTENT, "default"
+            return _default_reply_content(min_length), "default"
+        if len(text) < min_length:
+            text = _pad_reply_text(text, min_length)
         return text, "ai"
 
     def _run_reading(

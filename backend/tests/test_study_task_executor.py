@@ -114,7 +114,9 @@ class StubChapterClient:
     bundles: Mapping[str, ChapterTaskBundle]
     error: Exception | None = None
     calls: list[str] = field(default_factory=list)
-    verify_bundles: Mapping[str, ChapterTaskBundle] | None = None
+    verify_bundles: (
+        Mapping[str, ChapterTaskBundle | tuple[ChapterTaskBundle, ...]] | None
+    ) = None
     _fetch_counts: dict[str, int] = field(default_factory=dict)
 
     def fetch(self, _course: Course, chapter: Chapter) -> ChapterTaskBundle:
@@ -126,7 +128,10 @@ class StubChapterClient:
         if not seen:
             return self.bundles[chapter.chapter_id]
         if self.verify_bundles is not None:
-            return self.verify_bundles[chapter.chapter_id]
+            entry = self.verify_bundles[chapter.chapter_id]
+            if isinstance(entry, ChapterTaskBundle):
+                return entry
+            return entry[min(seen - 1, len(entry) - 1)]
         # The post-execution verification refetches the same cards; once every
         # job marker dropped the page reports no pending tasks left.
         bundle = self.bundles[chapter.chapter_id]
@@ -199,6 +204,7 @@ class StubDiscussionClient:
     result: DiscussionReplyResult = field(
         default_factory=lambda: DiscussionReplyResult(DiscussionReplyStatus.POSTED, 200, "ok")
     )
+    results: list[DiscussionReplyResult] = field(default_factory=list)
     calls: list[dict[str, object]] = field(default_factory=list)
 
     def reply(
@@ -217,6 +223,8 @@ class StubDiscussionClient:
                 "content": content,
             }
         )
+        if self.results:
+            return self.results.pop(0)
         return self.result
 
 
@@ -341,6 +349,7 @@ class ExecutorHarness:
                 progress,
                 self.playback_calls,
             ),
+            verify_delay_seconds=0,
         )
 
 
@@ -539,7 +548,8 @@ def test_pending_jobs_still_present_after_execution_marks_unsubmitted(tmp_path: 
     rows = load_chapters(database.engine, database.task_id)
     assert rows["doc"].status == ChapterStatus.UNSUBMITTED.value
     assert rows["doc"].last_error == "completion_unverified"
-    assert harness.chapter_client.calls == ["doc", "doc"]
+    # Initial fetch plus three verification polls all see the pending job.
+    assert harness.chapter_client.calls == ["doc"] * 4
 
 
 def test_only_pending_and_running_chapters_are_retried(tmp_path: Path) -> None:
@@ -768,6 +778,7 @@ def test_discussion_pending_review_and_rejection_are_reported(tmp_path: Path) ->
             if chapter_client.calls and chapter_client.calls[-1] == "pending"
             else rejected_client,
         ),
+        verify_delay_seconds=0,
     )
 
     status = executor.execute(
@@ -783,6 +794,75 @@ def test_discussion_pending_review_and_rejection_are_reported(tmp_path: Path) ->
     assert rows["rejected"].last_error == "platform_completion_rejected"
     kinds = [event.kind for event in load_events(database.engine, database.task_id)]
     assert "chapter.discussion.pending_review" in kinds
+
+
+def test_discussion_min_length_rejection_retries_with_longer_reply(
+    tmp_path: Path,
+) -> None:
+    # Topics enforce a minimum reply length that is only visible in the
+    # rejection message; the reply must grow to fit and be posted again.
+    database = make_task_database(
+        tmp_path,
+        [("discuss", ChapterStatus.PENDING)],
+        discussion_auto_reply=True,
+    )
+    discussion_client = StubDiscussionClient(
+        results=[
+            DiscussionReplyResult(
+                DiscussionReplyStatus.REJECTED, 200, "该话题至少回复200字"
+            ),
+            DiscussionReplyResult(DiscussionReplyStatus.POSTED, 200, "回复发表成功"),
+        ]
+    )
+    harness = ExecutorHarness(
+        StubChapterClient(
+            {"discuss": bundle(DiscussionTaskPoint("job-1", "mid-1", "info"))}
+        )
+    )
+    harness.discussion_client = discussion_client
+
+    status, _account = run_executor(
+        database,
+        CourseOutline((chapter("discuss"),)),
+        harness,
+    )
+
+    assert status is TaskStatus.SUCCEEDED
+    assert len(discussion_client.calls) == 2
+    retry_content = discussion_client.calls[1]["content"]
+    assert isinstance(retry_content, str)
+    assert len(retry_content) >= 200
+    rows = load_chapters(database.engine, database.task_id)
+    assert rows["discuss"].status == ChapterStatus.SUCCEEDED.value
+
+
+def test_completion_verified_after_pending_marker_clears(tmp_path: Path) -> None:
+    # The job marker can take a moment to drop; a verification poll that still
+    # sees it pending must not fail the chapter when a later poll is clean.
+    database = make_task_database(tmp_path, [("doc", ChapterStatus.PENDING)])
+    document = DocumentTaskPoint("doc-job", "object-2", "nodeId_doc", "jtoken")
+    pending_bundle = bundle(document)
+    cleared_bundle = ChapterTaskBundle(
+        (), pending_bundle.defaults, False,
+        pending_bundle.attachment_count, pending_bundle.attachment_count,
+    )
+    harness = ExecutorHarness(
+        StubChapterClient(
+            {"doc": pending_bundle},
+            verify_bundles={"doc": (pending_bundle, cleared_bundle)},
+        )
+    )
+
+    status, _account = run_executor(
+        database,
+        CourseOutline((chapter("doc", jobs=1),)),
+        harness,
+    )
+
+    assert status is TaskStatus.SUCCEEDED
+    rows = load_chapters(database.engine, database.task_id)
+    assert rows["doc"].status == ChapterStatus.SUCCEEDED.value
+    assert harness.chapter_client.calls == ["doc"] * 3
 
 
 def test_submitted_quiz_completes_without_exposing_answers(tmp_path: Path) -> None:
@@ -1205,6 +1285,7 @@ def run_concurrent_executor(
         engine=database.engine,
         account_runtime=runtime,  # type: ignore[arg-type]
         chapter_client_factory=chapter_client_factory,  # type: ignore[arg-type]
+        verify_delay_seconds=0,
     )
     status = executor.execute(
         database.claim,
@@ -1301,6 +1382,7 @@ def test_concurrent_control_request_stops_submitting_new_chapters(
         engine=database.engine,
         account_runtime=runtime,  # type: ignore[arg-type]
         chapter_client_factory=state.make_client,  # type: ignore[arg-type]
+        verify_delay_seconds=0,
     )
 
     with pytest.raises(exception_type):
