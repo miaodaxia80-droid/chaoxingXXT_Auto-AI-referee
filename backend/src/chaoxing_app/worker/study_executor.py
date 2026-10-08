@@ -727,7 +727,7 @@ class StudyTaskExecutor:
                 status=ChapterStatus.ALREADY_COMPLETED,
             )
             return
-        if bundle.attachment_count or chapter.job_count > 0:
+        if bundle.attachment_count:
             progress.record_event(
                 chapter.chapter_id,
                 kind="chapter.unresolved_task_points",
@@ -756,6 +756,44 @@ class StudyTaskExecutor:
         if not result.accepted:
             raise TaskPointRejected
         self._record_point_completed(progress, chapter.chapter_id, "empty_page")
+        if chapter.job_count > 0:
+            # 卡片页完全为空但仍声明了任务点 —— 任务可能是"访问即完成"的
+            # 隐藏类型, 但也可能是平台根本没渲染出来的任务. 访问上报之后
+            # 必须以大纲侧的完成状态为准, 空卡片页无法自证完成.
+            verified = self._authenticated(
+                account,
+                lambda client: client.get_course_outline(course),
+                control,
+            )
+            current = next(
+                (
+                    item
+                    for item in verified.chapters
+                    if item.chapter_id == chapter.chapter_id
+                ),
+                None,
+            )
+            if current is None or not current.is_completed:
+                progress.record_event(
+                    chapter.chapter_id,
+                    kind="chapter.unresolved_task_points",
+                    level="warning",
+                    payload={
+                        "task_type": "unresolved",
+                        "declared_jobs": chapter.job_count,
+                        "attachments": 0,
+                        "completed": 0,
+                        "empty_card_page": True,
+                        "unresolved_types": [],
+                        "material_types": [],
+                    },
+                )
+                progress.finish_chapter(
+                    chapter.chapter_id,
+                    status=ChapterStatus.FAILED,
+                    reason="unresolved_task_points",
+                )
+                return
         progress.finish_chapter(chapter.chapter_id, status=ChapterStatus.SUCCEEDED)
 
     def _run_task_points(
