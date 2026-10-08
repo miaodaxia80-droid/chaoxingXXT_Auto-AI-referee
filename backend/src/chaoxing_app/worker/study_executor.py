@@ -720,7 +720,8 @@ class StudyTaskExecutor:
         progress: ClaimedTaskProgress,
     ) -> None:
         if bundle.attachment_count and (
-            bundle.completed_attachment_count >= bundle.attachment_count
+            bundle.completed_attachment_count
+            >= max(bundle.attachment_count, chapter.job_count)
         ):
             progress.finish_chapter(
                 chapter.chapter_id,
