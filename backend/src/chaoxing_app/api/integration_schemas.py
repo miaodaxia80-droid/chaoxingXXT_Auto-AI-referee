@@ -15,6 +15,7 @@ class AnswerProviderPublicConfigResponse(BaseModel):
     endpoint: str | None = None
     base_url: str | None = None
     model: str | None = None
+    headers: dict[str, str] | None = None
     search: bool | None = None
     allow_unsafe_endpoint: bool = False
 
@@ -53,6 +54,7 @@ class AnswerIntegrationUpdateRequest(BaseModel):
     endpoint: str | None = Field(default=None, max_length=4_096)
     base_url: str | None = Field(default=None, max_length=4_096)
     model: str | None = Field(default=None, max_length=512)
+    headers: object | None = None
     search: bool | None = Field(default=None, strict=True)
     allow_unsafe_endpoint: bool | None = Field(default=None, strict=True)
     profile: dict[str, object] | None = None

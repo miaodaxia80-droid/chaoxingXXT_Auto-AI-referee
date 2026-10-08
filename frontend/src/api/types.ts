@@ -196,6 +196,7 @@ export interface AnswerProviderPublicConfig {
   endpoint: string | null
   base_url: string | null
   model: string | null
+  headers: Record<string, string> | null
   search: boolean | null
   allow_unsafe_endpoint: boolean
 }
@@ -234,6 +235,7 @@ export interface UpdateAnswerIntegrationInput {
   endpoint?: string
   base_url?: string
   model?: string
+  headers?: Record<string, string>
   search?: boolean
   allow_unsafe_endpoint?: boolean
   tokens?: string

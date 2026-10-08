@@ -219,6 +219,39 @@ def test_openai_compatible_chat_completion_contract_and_strict_json_response() -
     assert kwargs["allow_redirects"] is False
 
 
+def test_openai_compatible_sends_custom_headers_without_overriding_auth() -> None:
+    session = StubSession(
+        [response({"choices": [{"message": {"content": '{"Answer": ["A"]}'}}]})]
+    )
+    provider = OpenAICompatibleAnswerProvider(
+        base_url="https://llm.example.test/v1",
+        model="quiz-model",
+        api_key="openai-secret",
+        session=cast(requests.Session, session),
+        headers={
+            "x-opencode-session": "routing-session-id",
+            "Authorization": "Bearer forged",
+        },
+    )
+
+    as_protocol(provider).answer(
+        QuizQuestion(
+            question_id="q-single",
+            title="Question",
+            question_type=QuizQuestionType.SINGLE,
+            type_code="0",
+            options=("A. x", "B. y"),
+        )
+    )
+
+    _method, _url, kwargs = session.calls[0]
+    assert kwargs["headers"] == {
+        "x-opencode-session": "routing-session-id",
+        "Authorization": "Bearer openai-secret",
+        "Content-Type": "application/json",
+    }
+
+
 def test_siliconflow_reuses_chat_contract_with_an_independent_identity() -> None:
     session = StubSession(
         [response({"choices": [{"message": {"content": '{"Answer": ["true"]}'}}]})]

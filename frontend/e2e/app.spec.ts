@@ -200,6 +200,7 @@ async function mockApi(page: Page, initial: MockApiOptions = {}): Promise<ApiSta
           endpoint: null,
           base_url: null,
           model: null,
+          headers: null,
           search: null,
           allow_unsafe_endpoint: false,
         },

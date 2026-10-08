@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from copy import deepcopy
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
@@ -60,6 +61,7 @@ _DEFAULT_PROVIDER_CONFIGS: dict[str, dict[str, object]] = {
     AnswerProviderKind.OPENAI_COMPATIBLE.value: {
         "base_url": "",
         "model": "",
+        "headers": {},
         "allow_unsafe_endpoint": False,
     },
     AnswerProviderKind.SILICONFLOW.value: {
@@ -89,7 +91,7 @@ _PROVIDER_PUBLIC_FIELDS: dict[AnswerProviderKind, frozenset[str]] = {
         {"endpoint", "allow_unsafe_endpoint"}
     ),
     AnswerProviderKind.OPENAI_COMPATIBLE: frozenset(
-        {"base_url", "model", "allow_unsafe_endpoint"}
+        {"base_url", "model", "headers", "allow_unsafe_endpoint"}
     ),
     AnswerProviderKind.SILICONFLOW: frozenset(
         {"base_url", "model", "allow_unsafe_endpoint"}
@@ -102,6 +104,35 @@ _PROVIDER_SECRET_FIELD: dict[AnswerProviderKind, str | None] = {
     AnswerProviderKind.OPENAI_COMPATIBLE: "api_key",
     AnswerProviderKind.SILICONFLOW: "api_key",
 }
+
+
+_HEADER_NAME = re.compile(r"\A[!#$%&'*+\-.^_`|~0-9A-Za-z]+\Z")
+_HEADER_LIMIT = 16
+_HEADER_VALUE_LIMIT = 2_048
+
+
+def _normalize_provider_headers(value: object) -> dict[str, str]:
+    """Validate an optional map of extra request headers for HTTP providers."""
+
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise IntegrationConfigurationError("answer provider headers are invalid")
+    if len(value) > _HEADER_LIMIT:
+        raise IntegrationConfigurationError("answer provider headers are invalid")
+    normalized: dict[str, str] = {}
+    for name, header_value in value.items():
+        if (
+            not isinstance(name, str)
+            or not isinstance(header_value, str)
+            or not _HEADER_NAME.fullmatch(name.strip())
+            or "\r" in header_value
+            or "\n" in header_value
+            or len(header_value.strip()) > _HEADER_VALUE_LIMIT
+        ):
+            raise IntegrationConfigurationError("answer provider headers are invalid")
+        normalized[name.strip()] = header_value.strip()
+    return normalized
 
 
 class IntegrationConfigurationError(ValueError):
@@ -144,6 +175,7 @@ class AnswerRuntimeConfiguration:
     endpoint: str = ""
     base_url: str = ""
     model: str = ""
+    headers: dict[str, str] = dataclass_field(default_factory=dict)
     search: bool = False
     allow_unsafe_endpoint: bool = False
     credential: str | None = dataclass_field(default=None, repr=False)
@@ -331,6 +363,7 @@ class IntegrationSettingRepository:
             endpoint=self._runtime_text(selected, "endpoint"),
             base_url=self._runtime_text(selected, "base_url"),
             model=self._runtime_text(selected, "model"),
+            headers=self._runtime_headers(selected),
             search=self._runtime_switch(selected, "search"),
             allow_unsafe_endpoint=self._runtime_switch(
                 selected,
@@ -548,6 +581,8 @@ class IntegrationSettingRepository:
                         "answer provider switches must be boolean"
                     )
                 selected[key] = value
+            elif key == "headers":
+                selected[key] = _normalize_provider_headers(value)
             elif not isinstance(value, str):
                 raise IntegrationConfigurationError("answer provider text fields must be strings")
             else:
@@ -586,6 +621,11 @@ class IntegrationSettingRepository:
                         "answer provider switches must be boolean"
                     )
                 normalized[key] = value
+                continue
+            if key == "headers":
+                normalized[key] = _normalize_provider_headers(
+                    value if value else {}
+                )
                 continue
             if not isinstance(value, str):
                 raise IntegrationConfigurationError("answer provider configuration is invalid")
@@ -788,6 +828,13 @@ class IntegrationSettingRepository:
     def _runtime_switch(config: dict[str, object], field_name: str) -> bool:
         value = config.get(field_name, False)
         return value if isinstance(value, bool) else False
+
+    @staticmethod
+    def _runtime_headers(config: dict[str, object]) -> dict[str, str]:
+        try:
+            return _normalize_provider_headers(config.get("headers"))
+        except IntegrationConfigurationError:  # pragma: no cover - validated on write
+            return {}
 
     @staticmethod
     def _answer_view(
