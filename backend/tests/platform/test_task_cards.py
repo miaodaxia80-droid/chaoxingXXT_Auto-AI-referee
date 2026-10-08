@@ -173,6 +173,19 @@ def test_jobid_only_document_card_is_parsed_as_task() -> None:
     assert task.other_info == "nodeId_1087358235-cpi_497744587"
 
 
+def test_numeric_defaults_and_jobid_are_coerced_to_text() -> None:
+    page = parse_task_card_page(
+        """<script>mArg={
+        "defaults":{"ktoken":"k","knowledgeid":1087374901,"cpi":497744587,"cardid":1068636829},
+        "attachments":[{"job":true,"type":"workid","jobid":"work-1"}]
+        };</script>"""
+    )
+    assert page.defaults is not None
+    assert page.defaults.knowledge_id == "1087374901"
+    assert page.defaults.cpi == "497744587"
+    assert page.defaults.card_id == "1068636829"
+
+
 def test_client_probes_declared_cards_and_stops_after_empty_page() -> None:
     session = StubSession([response(fixture("task_cards.html")), response("<html></html>")])
     client = ChapterTaskClient(session=cast(requests.Session, session))
