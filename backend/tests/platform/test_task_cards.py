@@ -150,6 +150,29 @@ def test_non_job_attachment_is_ignored_but_incomplete_job_is_retained() -> None:
     assert isinstance(page.tasks[-1], UnsupportedTaskPoint)
 
 
+def test_jobid_only_document_card_is_parsed_as_task() -> None:
+    # 新版任务卡片不再输出 job 标记, 只有 jobid
+    page = parse_task_card_page(
+        """<script>mArg={"attachments":[{
+        "begins":0,"ends":0,"type":"document","jobid":"1766028012513548",
+        "jtoken":"9391ea16a1a80e94c81c49f6434f580e",
+        "otherInfo":"nodeId_1087358235-cpi_497744587",
+        "mid":"2815876647471766028012073","enc":"ca9512a32e6a3b76d4b3e4276f9e3944",
+        "aid":2156424336,
+        "property":{"jobid":"1766028012513548","module":"insertdoc",
+            "name":"课件.pptx","objectid":"4171653dd2def09d357717a47f452954",
+            "pagenum":"22","type":".pptx","title":"课件.pptx"}
+        }]};</script>"""
+    )
+    assert page.attachment_count == 1
+    assert page.unresolved_attachment_count == 0
+    task = cast(DocumentTaskPoint, page.tasks[0])
+    assert task.job_id == "1766028012513548"
+    assert task.object_id == "4171653dd2def09d357717a47f452954"
+    assert task.jtoken == "9391ea16a1a80e94c81c49f6434f580e"
+    assert task.other_info == "nodeId_1087358235-cpi_497744587"
+
+
 def test_client_probes_declared_cards_and_stops_after_empty_page() -> None:
     session = StubSession([response(fixture("task_cards.html")), response("<html></html>")])
     client = ChapterTaskClient(session=cast(requests.Session, session))

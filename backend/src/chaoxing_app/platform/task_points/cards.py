@@ -242,8 +242,8 @@ def _parse_task(card: Mapping[str, object]) -> TaskPoint | None:
     job_id = _text(card.get("jobid"))
     other_info = _clean_other_info(card.get("otherInfo"))
 
-    if card.get("job") is None:
-        if raw_type != "read" or properties.get("read") is True:
+    if card.get("job") is None and raw_type == "read":
+        if properties.get("read") is True:
             return None
         if not job_id:
             return _unsupported(card, raw_type, "missing job id")
@@ -257,6 +257,10 @@ def _parse_task(card: Mapping[str, object]) -> TaskPoint | None:
             enc=_text(card.get("enc")),
             aid=_text(card.get("aid")),
         )
+
+    # 新版任务卡片不再输出 job 标记, 改用 jobid 是否存在判断任务点
+    if card.get("job") is None and not job_id:
+        return None
 
     if not job_id:
         return _unsupported(card, raw_type, "missing job id")
@@ -335,8 +339,10 @@ def parse_task_card_page(html: str) -> TaskCardPage:
             raise PlatformParseError("task cards", "attachment must be an object")
         raw_type = _text(card.get("type"))
         properties = _mapping(card.get("property"))
-        is_task = card.get("job") is not None or (
-            raw_type == "read" and properties.get("read") is not True
+        is_task = (
+            card.get("job") is not None
+            or (raw_type == "read" and properties.get("read") is not True)
+            or (raw_type != "read" and bool(_text(card.get("jobid"))))
         )
         if not is_task:
             continue
