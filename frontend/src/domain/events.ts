@@ -47,6 +47,7 @@ export const EVENT_LABELS: Record<string, string> = {
   'chapter.discussion.completed': '讨论回复已发布',
   'chapter.discussion.auto_reply_disabled': '讨论任务未自动回帖',
   'chapter.discussion.pending_review': '讨论回复等待审核',
+  'chapter.discussion.rejected': '讨论回复被平台拒绝',
   'chapter.completion_unverified': '平台未确认完成',
   'operator.intervention_resolved': '待处理事项已确认',
   'notification.sent': '通知已发送',

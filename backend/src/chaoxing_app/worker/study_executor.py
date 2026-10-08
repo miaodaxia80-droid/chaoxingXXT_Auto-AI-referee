@@ -257,7 +257,9 @@ def _default_reply_content(min_length: int) -> str:
 
 
 class TaskPointRejected(PlatformError):
-    pass
+    def __init__(self, detail: str = "") -> None:
+        super().__init__(detail or "platform rejected the completion request")
+        self.detail = detail
 
 
 class StudyTaskExecutor:
@@ -725,14 +727,20 @@ class StudyTaskExecutor:
                 status=ChapterStatus.ALREADY_COMPLETED,
             )
             return
-        if bundle.attachment_count:
-            progress.finish_chapter(
+        if bundle.attachment_count or chapter.job_count > 0:
+            progress.record_event(
                 chapter.chapter_id,
-                status=ChapterStatus.FAILED,
-                reason="unresolved_task_points",
+                kind="chapter.unresolved_task_points",
+                level="warning",
+                payload={
+                    "task_type": "unresolved",
+                    "declared_jobs": chapter.job_count,
+                    "attachments": bundle.attachment_count,
+                    "completed": bundle.completed_attachment_count,
+                    "unresolved_types": list(bundle.unresolved_types),
+                    "material_types": list(bundle.material_types),
+                },
             )
-            return
-        if chapter.job_count > 0:
             progress.finish_chapter(
                 chapter.chapter_id,
                 status=ChapterStatus.FAILED,
@@ -772,6 +780,7 @@ class StudyTaskExecutor:
                 payload={
                     "task_type": "unresolved",
                     "count": bundle.unresolved_attachment_count,
+                    "unresolved_types": list(bundle.unresolved_types),
                 },
             )
             attention = ChapterStatus.FAILED
@@ -1050,7 +1059,17 @@ class StudyTaskExecutor:
                 payload={"task_type": "discussion", "title": task_point.title},
             )
             return ChapterStatus.UNSUBMITTED, "discussion_reply_pending_review"
-        raise TaskPointRejected
+        progress.record_event(
+            chapter.chapter_id,
+            kind="chapter.discussion.rejected",
+            level="warning",
+            payload={
+                "task_type": "discussion",
+                "title": task_point.title,
+                "message": result.message,
+            },
+        )
+        raise TaskPointRejected(result.message)
 
     @staticmethod
     def _discussion_reply_content(
