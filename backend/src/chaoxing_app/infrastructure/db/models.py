@@ -200,6 +200,9 @@ class Account(TimestampMixin, Base):
     speed: Mapped[float] = mapped_column(Float, default=1.0, nullable=False)
     chapter_concurrency: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     unopened_policy: Mapped[str] = mapped_column(String(32), default="retry", nullable=False)
+    discussion_auto_reply: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False
+    )
     lease_version: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     answer_profile_override: Mapped[dict[str, Any] | None] = mapped_column(JSON)
 

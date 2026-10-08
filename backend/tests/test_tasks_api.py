@@ -98,6 +98,7 @@ def test_task_creation_requires_csrf_and_persists_snapshot_and_event() -> None:
                     "speed": 1.5,
                     "chapter_concurrency": 3,
                     "unopened_policy": "skip",
+                    "discussion_auto_reply": False,
                     "user_agent": "Fixture Browser",
                     "answer": {
                         "enabled": False,

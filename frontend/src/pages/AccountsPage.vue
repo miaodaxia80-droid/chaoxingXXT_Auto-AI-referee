@@ -71,6 +71,7 @@ interface EditAccountForm {
   speed: number
   chapter_concurrency: number
   unopened_policy: 'retry' | 'skip'
+  discussion_auto_reply: boolean
   enabled: boolean
   clear_password: boolean
   clear_cookies: boolean
@@ -111,6 +112,7 @@ const createForm = reactive<CreateAccountInput>({
   speed: 1,
   chapter_concurrency: 1,
   unopened_policy: 'retry',
+  discussion_auto_reply: false,
 })
 const editForm = reactive<EditAccountForm>({
   remark: '',
@@ -121,6 +123,7 @@ const editForm = reactive<EditAccountForm>({
   speed: 1,
   chapter_concurrency: 1,
   unopened_policy: 'retry' as 'retry' | 'skip',
+  discussion_auto_reply: false,
   enabled: true,
   clear_password: false,
   clear_cookies: false,
@@ -394,6 +397,7 @@ function resetCreateForm() {
     speed: 1,
     chapter_concurrency: 1,
     unopened_policy: 'retry',
+    discussion_auto_reply: false,
   })
   createLoginMethod.value = 'password'
 }
@@ -409,6 +413,7 @@ function resetEditForm() {
     speed: 1,
     chapter_concurrency: 1,
     unopened_policy: 'retry',
+    discussion_auto_reply: false,
     enabled: true,
     clear_password: false,
     clear_cookies: false,
@@ -473,6 +478,7 @@ function downloadImportTemplate() {
     'speed',
     'chapter_concurrency',
     'unopened_policy',
+    'discussion_auto_reply',
   ].join(',')
   const url = URL.createObjectURL(new Blob([`\ufeff${header}\r\n`], { type: 'text/csv;charset=utf-8' }))
   const link = document.createElement('a')
@@ -500,6 +506,7 @@ function openEdit(account: Account) {
     speed: account.speed,
     chapter_concurrency: account.chapter_concurrency,
     unopened_policy: account.unopened_policy,
+    discussion_auto_reply: account.discussion_auto_reply,
     enabled: account.enabled,
     clear_password: false,
     clear_cookies: false,
@@ -553,6 +560,7 @@ function submitEdit() {
     speed: editForm.speed,
     chapter_concurrency: editForm.chapter_concurrency,
     unopened_policy: editForm.unopened_policy,
+    discussion_auto_reply: editForm.discussion_auto_reply,
     enabled: editForm.enabled,
     clear_password: editForm.clear_password,
     clear_cookies: editForm.clear_cookies,
@@ -828,6 +836,15 @@ function requestDelete(account: Account) {
           <NSelect v-model:value="createForm.unopened_policy" :options="UNOPENED_OPTIONS" />
         </NFormItem>
       </div>
+      <NFormItem label="章节讨论题">
+        <div>
+          <div class="edit-account-state">
+            <NSwitch v-model:value="createForm.discussion_auto_reply" />
+            <span>{{ createForm.discussion_auto_reply ? '自动回帖' : '手动处理' }}</span>
+          </div>
+          <p class="form-hint">开启后自动发布一条通用回复完成讨论任务点，回帖内容对班级可见。</p>
+        </div>
+      </NFormItem>
       <div class="security-note">
         <ShieldCheck :size="18" />
         <span>账号、密码和 Cookie 分字段加密，普通接口无法读取原文。</span>
@@ -946,6 +963,15 @@ function requestDelete(account: Account) {
           <NSelect v-model:value="editForm.unopened_policy" :options="UNOPENED_OPTIONS" />
         </NFormItem>
       </div>
+      <NFormItem label="章节讨论题">
+        <div>
+          <div class="edit-account-state">
+            <NSwitch v-model:value="editForm.discussion_auto_reply" />
+            <span>{{ editForm.discussion_auto_reply ? '自动回帖' : '手动处理' }}</span>
+          </div>
+          <p class="form-hint">开启后自动发布一条通用回复完成讨论任务点，回帖内容对班级可见。</p>
+        </div>
+      </NFormItem>
       <section class="answer-profile-setting">
         <strong class="account-section-label">答案设置</strong>
         <div class="answer-profile-mode">

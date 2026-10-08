@@ -25,6 +25,7 @@ class NewAccount:
     speed: float = 1.0
     chapter_concurrency: int = 1
     unopened_policy: str = "retry"
+    discussion_auto_reply: bool = False
     answer_profile_override: dict[str, object] | None = None
     user_id: int | None = None
 
@@ -39,6 +40,7 @@ class AccountUpdate:
     speed: float | None = None
     chapter_concurrency: int | None = None
     unopened_policy: str | None = None
+    discussion_auto_reply: bool | None = None
     enabled: bool | None = None
     clear_password: bool = False
     clear_cookies: bool = False
@@ -73,6 +75,7 @@ class AccountRepository:
             speed=new_account.speed,
             chapter_concurrency=new_account.chapter_concurrency,
             unopened_policy=new_account.unopened_policy,
+            discussion_auto_reply=new_account.discussion_auto_reply,
             answer_profile_override=normalize_answer_profile_override(
                 new_account.answer_profile_override
             ),
@@ -147,6 +150,8 @@ class AccountRepository:
             account.chapter_concurrency = changes.chapter_concurrency
         if changes.unopened_policy is not None:
             account.unopened_policy = changes.unopened_policy
+        if changes.discussion_auto_reply is not None:
+            account.discussion_auto_reply = changes.discussion_auto_reply
         if changes.enabled is not None:
             account.enabled = changes.enabled
         if changes.clear_answer_profile_override:

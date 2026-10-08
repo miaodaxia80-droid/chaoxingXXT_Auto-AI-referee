@@ -80,17 +80,30 @@ class ReadTaskPoint:
 
 
 @dataclass(frozen=True, slots=True)
+class DiscussionTaskPoint:
+    job_id: str
+    mid: str
+    other_info: str
+    title: str = ""
+    enc: str = ""
+    aid: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class UnsupportedTaskPoint:
     job_id: str
     raw_type: str
     reason: str
 
 
+_DISCUSSION_MODULES = frozenset({"insertbbs", "inserttopic"})
+
 type TaskPoint = (
     VideoTaskPoint
     | DocumentTaskPoint
     | QuizTaskPoint
     | ReadTaskPoint
+    | DiscussionTaskPoint
     | UnsupportedTaskPoint
 )
 
@@ -308,6 +321,18 @@ def _parse_task(card: Mapping[str, object]) -> TaskPoint | None:
             job_id=job_id,
             other_info=other_info,
             mid=_text(card.get("mid")),
+            enc=_text(card.get("enc")),
+            aid=_text(card.get("aid")),
+        )
+    if raw_type in _DISCUSSION_MODULES or _text(properties.get("module")) in _DISCUSSION_MODULES:
+        mid = _text(card.get("mid")) or _text(properties.get("mid"))
+        if not mid:
+            return _unsupported(card, raw_type, "missing discussion topic id")
+        return DiscussionTaskPoint(
+            job_id=job_id,
+            mid=mid,
+            other_info=other_info,
+            title=_text(properties.get("title")),
             enc=_text(card.get("enc")),
             aid=_text(card.get("aid")),
         )

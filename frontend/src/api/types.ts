@@ -284,6 +284,7 @@ export interface Account {
   speed: number
   chapter_concurrency: number
   unopened_policy: 'retry' | 'skip'
+  discussion_auto_reply: boolean
   has_password: boolean
   has_cookies: boolean
   answer_profile_override: AnswerProfileOverride | null
@@ -300,6 +301,7 @@ export interface CreateAccountInput {
   speed: number
   chapter_concurrency: number
   unopened_policy: 'retry' | 'skip'
+  discussion_auto_reply: boolean
   answer_profile_override?: AnswerProfileOverride | null
 }
 
@@ -312,6 +314,7 @@ export interface UpdateAccountInput {
   speed?: number
   chapter_concurrency?: number
   unopened_policy?: 'retry' | 'skip'
+  discussion_auto_reply?: boolean
   enabled?: boolean
   clear_password?: boolean
   clear_cookies?: boolean

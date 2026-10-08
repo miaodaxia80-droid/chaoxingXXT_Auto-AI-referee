@@ -45,6 +45,7 @@ _IMPORT_FIELDS = {
     "speed",
     "chapter_concurrency",
     "unopened_policy",
+    "discussion_auto_reply",
 }
 
 
@@ -58,6 +59,7 @@ def to_response(account: Account) -> AccountResponse:
         speed=account.speed,
         chapter_concurrency=account.chapter_concurrency,
         unopened_policy=account.unopened_policy,
+        discussion_auto_reply=account.discussion_auto_reply,
         has_password=bool(account.secret.password_encrypted),
         has_cookies=bool(account.secret.cookies_encrypted),
         answer_profile_override=account.answer_profile_override,
@@ -100,6 +102,7 @@ def create_account(
                 speed=payload.speed,
                 chapter_concurrency=payload.chapter_concurrency,
                 unopened_policy=payload.unopened_policy,
+                discussion_auto_reply=payload.discussion_auto_reply,
                 answer_profile_override=payload.answer_profile_override,
                 user_id=scoped_user_id(context),
             ),
@@ -213,6 +216,7 @@ async def import_accounts(
                         speed=payload.speed,
                         chapter_concurrency=payload.chapter_concurrency,
                         unopened_policy=payload.unopened_policy,
+                        discussion_auto_reply=payload.discussion_auto_reply,
                         answer_profile_override=payload.answer_profile_override,
                         user_id=owner_user_id,
                     ),
@@ -290,6 +294,7 @@ def update_account(
                 speed=payload.speed,
                 chapter_concurrency=payload.chapter_concurrency,
                 unopened_policy=payload.unopened_policy,
+                discussion_auto_reply=payload.discussion_auto_reply,
                 enabled=payload.enabled,
                 clear_password=payload.clear_password,
                 clear_cookies=payload.clear_cookies,

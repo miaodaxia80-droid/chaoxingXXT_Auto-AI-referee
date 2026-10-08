@@ -25,12 +25,19 @@ from chaoxing_app.platform.errors import (
 from chaoxing_app.platform.models import Chapter, Course, CourseOutline
 from chaoxing_app.platform.task_points.cards import (
     ChapterTaskBundle,
+    DiscussionTaskPoint,
     DocumentTaskPoint,
     JobDefaults,
     QuizTaskPoint,
     ReadTaskPoint,
     UnsupportedTaskPoint,
     VideoTaskPoint,
+)
+from chaoxing_app.platform.task_points.discussion import (
+    DEFAULT_REPLY_CONTENT,
+    DiscussionReplyResult,
+    DiscussionReplyStatus,
+    DiscussionTaskClient,
 )
 from chaoxing_app.platform.task_points.document import (
     DocumentCompletionResult,
@@ -113,6 +120,17 @@ class EmptyPageTaskPort(Protocol):
     def complete(self, course: Course, chapter: Chapter) -> EmptyPageCompletionResult: ...
 
 
+class DiscussionTaskPort(Protocol):
+    def reply(
+        self,
+        course: Course,
+        task: DiscussionTaskPoint,
+        *,
+        knowledge_id: str,
+        content: str,
+    ) -> DiscussionReplyResult: ...
+
+
 class QuizTaskPort(Protocol):
     def complete(
         self,
@@ -145,6 +163,7 @@ ChapterClientFactory = Callable[[requests.Session], ChapterTaskPort]
 DocumentClientFactory = Callable[[requests.Session], DocumentTaskPort]
 ReadingClientFactory = Callable[[requests.Session], ReadingTaskPort]
 EmptyPageClientFactory = Callable[[requests.Session], EmptyPageTaskPort]
+DiscussionClientFactory = Callable[[requests.Session], DiscussionTaskPort]
 QuizClientFactory = Callable[[requests.Session], QuizTaskPort]
 VideoClientFactory = Callable[[requests.Session], MediaProgressPort]
 PlaybackFactory = Callable[[MediaProgressPort, WorkerControl, ProgressCallback], PlaybackPort]
@@ -166,6 +185,10 @@ def _reading_client(session: requests.Session) -> ReadingTaskPort:
 
 def _empty_page_client(session: requests.Session) -> EmptyPageTaskPort:
     return EmptyPageTaskClient(session=session)
+
+
+def _discussion_client(session: requests.Session) -> DiscussionTaskPort:
+    return DiscussionTaskClient(session=session)
 
 
 def _quiz_client(session: requests.Session) -> QuizTaskPort:
@@ -198,6 +221,7 @@ class StudyTaskExecutor:
         document_client_factory: DocumentClientFactory = _document_client,
         reading_client_factory: ReadingClientFactory = _reading_client,
         empty_page_client_factory: EmptyPageClientFactory = _empty_page_client,
+        discussion_client_factory: DiscussionClientFactory = _discussion_client,
         quiz_client_factory: QuizClientFactory = _quiz_client,
         answer_provider_runtime: AnswerProviderRuntimePort | None = None,
         video_client_factory: VideoClientFactory = _video_client,
@@ -209,6 +233,7 @@ class StudyTaskExecutor:
         self._document_client_factory = document_client_factory
         self._reading_client_factory = reading_client_factory
         self._empty_page_client_factory = empty_page_client_factory
+        self._discussion_client_factory = discussion_client_factory
         self._quiz_client_factory = quiz_client_factory
         self._answer_provider_runtime = (
             answer_provider_runtime or DisabledAnswerProviderRuntime()
@@ -530,7 +555,7 @@ class StudyTaskExecutor:
                 return
             if any(isinstance(task_point, QuizTaskPoint) for task_point in bundle.tasks):
                 with self._answer_provider_runtime.open(snapshot.config) as binding:
-                    attention = self._run_task_points(
+                    attention, attention_reason = self._run_task_points(
                         snapshot=snapshot,
                         course=course,
                         chapter=chapter,
@@ -541,7 +566,7 @@ class StudyTaskExecutor:
                         answer_binding=binding,
                     )
             else:
-                attention = self._run_task_points(
+                attention, attention_reason = self._run_task_points(
                     snapshot=snapshot,
                     course=course,
                     chapter=chapter,
@@ -554,7 +579,7 @@ class StudyTaskExecutor:
             progress.finish_chapter(
                 chapter.chapter_id,
                 status=attention or ChapterStatus.SUCCEEDED,
-                reason=self._attention_reason(attention),
+                reason=attention_reason or self._attention_reason(attention),
             )
         except (TaskPauseRequested, TaskCancelRequested, TaskLeaseLost):
             raise
@@ -631,8 +656,9 @@ class StudyTaskExecutor:
         control: WorkerControl,
         progress: ClaimedTaskProgress,
         answer_binding: AnswerProviderBinding | None,
-    ) -> ChapterStatus | None:
+    ) -> tuple[ChapterStatus | None, str | None]:
         attention: ChapterStatus | None = None
+        attention_reason: str | None = None
         if bundle.unresolved_attachment_count:
             progress.record_event(
                 chapter.chapter_id,
@@ -644,6 +670,7 @@ class StudyTaskExecutor:
                 },
             )
             attention = ChapterStatus.FAILED
+            attention_reason = "unresolved_task_points"
         for task_point in bundle.tasks:
             control.checkpoint()
             if isinstance(task_point, QuizTaskPoint):
@@ -670,6 +697,21 @@ class StudyTaskExecutor:
                     payload={"task_type": "unsupported"},
                 )
                 attention = ChapterStatus.FAILED
+                attention_reason = "unsupported_task_point"
+                continue
+            if isinstance(task_point, DiscussionTaskPoint):
+                discussion_attention = self._run_discussion(
+                    snapshot=snapshot,
+                    course=course,
+                    chapter=chapter,
+                    bundle=bundle,
+                    task_point=task_point,
+                    account=account,
+                    control=control,
+                    progress=progress,
+                )
+                if attention is None and discussion_attention[0] is not None:
+                    attention, attention_reason = discussion_attention
                 continue
             if isinstance(task_point, VideoTaskPoint):
                 self._run_video(
@@ -705,7 +747,7 @@ class StudyTaskExecutor:
                 )
                 continue
             raise PlatformParseError("chapter task point", "unknown typed task point")
-        return attention
+        return attention, attention_reason
 
     def _run_quiz(
         self,
@@ -822,6 +864,58 @@ class StudyTaskExecutor:
             raise TaskPointRejected
         self._record_point_completed(progress, chapter.chapter_id, "document")
 
+    def _run_discussion(
+        self,
+        *,
+        snapshot: TaskExecutionSnapshot,
+        course: Course,
+        chapter: Chapter,
+        bundle: ChapterTaskBundle,
+        task_point: DiscussionTaskPoint,
+        account: AccountStudySession,
+        control: WorkerControl,
+        progress: ClaimedTaskProgress,
+    ) -> tuple[ChapterStatus | None, str | None]:
+        if not self._discussion_auto_reply(snapshot.config):
+            progress.record_event(
+                chapter.chapter_id,
+                kind="chapter.discussion.auto_reply_disabled",
+                level="warning",
+                payload={"task_type": "discussion", "title": task_point.title},
+            )
+            return ChapterStatus.UNSUBMITTED, "discussion_auto_reply_disabled"
+        knowledge_id = (
+            bundle.defaults.knowledge_id
+            if bundle.defaults and bundle.defaults.knowledge_id
+            else chapter.chapter_id
+        )
+        client = self._discussion_client_factory(account.session)
+        result = self._authenticated(
+            account,
+            lambda _active: client.reply(
+                course,
+                task_point,
+                knowledge_id=knowledge_id,
+                content=DEFAULT_REPLY_CONTENT,
+            ),
+            control,
+        )
+        if result.status in {
+            DiscussionReplyStatus.POSTED,
+            DiscussionReplyStatus.ALREADY_REPLIED,
+        }:
+            self._record_point_completed(progress, chapter.chapter_id, "discussion")
+            return None, None
+        if result.status is DiscussionReplyStatus.PENDING_REVIEW:
+            progress.record_event(
+                chapter.chapter_id,
+                kind="chapter.discussion.pending_review",
+                level="warning",
+                payload={"task_type": "discussion", "title": task_point.title},
+            )
+            return ChapterStatus.UNSUBMITTED, "discussion_reply_pending_review"
+        raise TaskPointRejected
+
     def _run_reading(
         self,
         *,
@@ -873,6 +967,7 @@ class StudyTaskExecutor:
             "document": "chapter.document.completed",
             "reading": "chapter.reading.completed",
             "empty_page": "chapter.empty_page.completed",
+            "discussion": "chapter.discussion.completed",
         }.get(task_type, "chapter.task_point_completed")
         progress.record_event(
             chapter_id,
@@ -911,6 +1006,10 @@ class StudyTaskExecutor:
     def _unopened_policy(config: Mapping[str, object]) -> str:
         value = config.get("unopened_policy", "retry")
         return value if value in {"retry", "skip"} else "retry"
+
+    @staticmethod
+    def _discussion_auto_reply(config: Mapping[str, object]) -> bool:
+        return config.get("discussion_auto_reply") is True
 
     @staticmethod
     def _quiz_submission_mode(config: Mapping[str, object]) -> QuizSubmissionMode:

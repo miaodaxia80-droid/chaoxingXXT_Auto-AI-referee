@@ -240,6 +240,7 @@ class AccountCreateRequest(BaseModel):
     speed: float = Field(default=1.0, ge=1.0, le=2.0)
     chapter_concurrency: int = Field(default=1, ge=1, le=8)
     unopened_policy: str = "retry"
+    discussion_auto_reply: bool = False
     answer_profile_override: dict[str, object] | None = None
 
     @field_validator("unopened_policy")
@@ -269,6 +270,7 @@ class AccountUpdateRequest(BaseModel):
     speed: float | None = Field(default=None, ge=1.0, le=2.0)
     chapter_concurrency: int | None = Field(default=None, ge=1, le=8)
     unopened_policy: str | None = None
+    discussion_auto_reply: bool | None = None
     enabled: bool | None = None
     clear_password: bool = False
     clear_cookies: bool = False
@@ -324,6 +326,7 @@ class AccountResponse(BaseModel):
     speed: float
     chapter_concurrency: int
     unopened_policy: str
+    discussion_auto_reply: bool
     has_password: bool
     has_cookies: bool
     answer_profile_override: dict[str, object] | None

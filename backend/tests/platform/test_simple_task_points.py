@@ -15,7 +15,16 @@ from chaoxing_app.platform.errors import (
     PlatformTimeoutError,
 )
 from chaoxing_app.platform.models import Chapter, Course
-from chaoxing_app.platform.task_points.cards import DocumentTaskPoint, ReadTaskPoint
+from chaoxing_app.platform.task_points.cards import (
+    DiscussionTaskPoint,
+    DocumentTaskPoint,
+    ReadTaskPoint,
+)
+from chaoxing_app.platform.task_points.discussion import (
+    DiscussionReplyResult,
+    DiscussionReplyStatus,
+    DiscussionTaskClient,
+)
 from chaoxing_app.platform.task_points.document import (
     DocumentCompletionResult,
     DocumentTaskClient,
@@ -91,6 +100,37 @@ def document_task(**changes: str) -> DocumentTaskPoint:
     return DocumentTaskPoint(**values)
 
 
+_BBS_ID = "a" * 32
+_TOPIC_UUID = "b" * 32
+_TOPIC_URL = (
+    "https://groupweb.chaoxing.com/course/topic/v3/bbs/"
+    f"{_BBS_ID}/{_TOPIC_UUID}/replysList?courseId=course-100&classId=class-100"
+)
+
+
+def discussion_task(**changes: str) -> DiscussionTaskPoint:
+    values = {
+        "job_id": "discussion-job",
+        "mid": "topic-mid",
+        "other_info": "nodeId_42",
+        "title": "Fixture Discussion",
+    }
+    values.update(changes)
+    return DiscussionTaskPoint(**values)
+
+
+def _chapter_page(*, finished: bool = False, topic_url: str = _TOPIC_URL) -> str:
+    value = "true" if finished else ""
+    return (
+        f'<div class="PublicCardBox" id="topicMainDiv" data="{topic_url}"></div>'
+        f'<input type="hidden" id="isFinished" value="{value}"/>'
+    )
+
+
+def _topic_page() -> str:
+    return "<script>window.obj={urlToken:'0123456789abcdef0123456789abcdef'};</script>"
+
+
 def reading_task(**changes: str) -> ReadTaskPoint:
     values = {
         "job_id": "reading-job",
@@ -162,6 +202,121 @@ def test_reading_completion_covers_readv2_parameters_and_status() -> None:
         course(), reading_task(), knowledge_id="chapter-100"
     )
     assert rejected.accepted is False
+
+
+def test_discussion_reply_posts_to_invitation_endpoint() -> None:
+    session = StubSession(
+        [
+            text_response(_chapter_page()),
+            text_response(_topic_page(), url=_TOPIC_URL),
+            json_response({"status": True, "msg": "ok", "datas": {"reply": {}}}),
+        ]
+    )
+    client = DiscussionTaskClient(session=cast(requests.Session, session))
+
+    result = client.reply(
+        course(), discussion_task(), knowledge_id="chapter-100", content="学习了 内容&?"
+    )
+
+    assert result == DiscussionReplyResult(DiscussionReplyStatus.POSTED, 200, "ok")
+    chapter_call = session.calls[0]
+    assert chapter_call[0] == "GET"
+    assert chapter_call[1] == "https://mooc1.chaoxing.com/mooc-ans/bbscircle/chapter"
+    assert chapter_call[2]["params"] == {
+        "mtopicid": "topic-mid",
+        "jobid": "discussion-job",
+        "isPortal": "false",
+        "knowledgeid": "chapter-100",
+        "ut": "s",
+        "clazzId": "class-100",
+        "enc": "",
+    }
+    topic_call = session.calls[1]
+    assert topic_call[0] == "GET"
+    assert topic_call[1] == _TOPIC_URL
+    post_call = session.calls[2]
+    assert post_call[0] == "POST"
+    assert post_call[1] == (
+        f"https://groupweb.chaoxing.com/pc/invitation/{_TOPIC_UUID}/addReplys"
+    )
+    body = post_call[2]["data"]
+    # The platform page double-encodes the reply text before posting it.
+    assert "topic_content=%25E5%25AD%25A6" in body
+    assert "urlToken=0123456789abcdef0123456789abcdef" in body
+    assert f"bbsid={_BBS_ID}" in body
+    assert "replyId=-1" in body
+    assert "courseId=course-100" in body
+    assert "classId=class-100" in body
+    headers = post_call[2]["headers"]
+    assert headers["X-Requested-With"] == "XMLHttpRequest"
+    assert "application/x-www-form-urlencoded" in headers["Content-Type"]
+
+
+def test_discussion_reply_skips_finished_and_maps_review_states() -> None:
+    finished = StubSession([text_response(_chapter_page(finished=True))])
+    client = DiscussionTaskClient(session=cast(requests.Session, finished))
+    result = client.reply(
+        course(), discussion_task(), knowledge_id="chapter-100", content="content"
+    )
+    assert result.status is DiscussionReplyStatus.ALREADY_REPLIED
+    assert len(finished.calls) == 1
+
+    pending = StubSession(
+        [
+            text_response(_chapter_page()),
+            text_response(_topic_page()),
+            json_response({"status": True, "msg": "reply under review", "datas": None}),
+        ]
+    )
+    result = DiscussionTaskClient(session=cast(requests.Session, pending)).reply(
+        course(), discussion_task(), knowledge_id="chapter-100", content="content"
+    )
+    assert result.status is DiscussionReplyStatus.PENDING_REVIEW
+    assert result.message == "reply under review"
+
+    rejected = StubSession(
+        [
+            text_response(_chapter_page()),
+            text_response(_topic_page()),
+            json_response({"status": False, "msg": "reply limit reached"}),
+        ]
+    )
+    result = DiscussionTaskClient(session=cast(requests.Session, rejected)).reply(
+        course(), discussion_task(), knowledge_id="chapter-100", content="content"
+    )
+    assert result.status is DiscussionReplyStatus.REJECTED
+
+
+def test_discussion_reply_rejects_malformed_pages_without_leaking_content() -> None:
+    session = StubSession([text_response("private page without topic link")])
+    client = DiscussionTaskClient(session=cast(requests.Session, session))
+    with pytest.raises(PlatformParseError, match="missing topic link") as raised:
+        client.reply(course(), discussion_task(), knowledge_id="c", content="x")
+    assert "private page" not in str(raised.value)
+
+    no_token = StubSession(
+        [
+            text_response(_chapter_page()),
+            text_response("private topic page without token"),
+        ]
+    )
+    with pytest.raises(PlatformParseError, match="missing url token") as raised:
+        DiscussionTaskClient(session=cast(requests.Session, no_token)).reply(
+            course(), discussion_task(), knowledge_id="c", content="x"
+        )
+    assert "private topic page" not in str(raised.value)
+
+    invalid_reply = StubSession(
+        [
+            text_response(_chapter_page()),
+            text_response(_topic_page()),
+            text_response("not json"),
+        ]
+    )
+    with pytest.raises(PlatformParseError, match="not valid JSON"):
+        DiscussionTaskClient(session=cast(requests.Session, invalid_reply)).reply(
+            course(), discussion_task(), knowledge_id="c", content="x"
+        )
 
 
 def test_empty_page_completion_covers_studentstudyajax_parameters() -> None:

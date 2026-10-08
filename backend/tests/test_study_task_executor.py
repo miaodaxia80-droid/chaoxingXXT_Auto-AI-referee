@@ -29,12 +29,17 @@ from chaoxing_app.platform.errors import PlatformAuthenticationError, PlatformPa
 from chaoxing_app.platform.models import Chapter, Course, CourseOutline
 from chaoxing_app.platform.task_points.cards import (
     ChapterTaskBundle,
+    DiscussionTaskPoint,
     DocumentTaskPoint,
     JobDefaults,
     QuizTaskPoint,
     ReadTaskPoint,
     UnsupportedTaskPoint,
     VideoTaskPoint,
+)
+from chaoxing_app.platform.task_points.discussion import (
+    DiscussionReplyResult,
+    DiscussionReplyStatus,
 )
 from chaoxing_app.platform.task_points.document import DocumentCompletionResult
 from chaoxing_app.platform.task_points.empty_page import EmptyPageCompletionResult
@@ -146,6 +151,32 @@ class StubEmptyPageClient:
         return EmptyPageCompletionResult(True, 200, chapter.chapter_id)
 
 
+@dataclass(slots=True)
+class StubDiscussionClient:
+    result: DiscussionReplyResult = field(
+        default_factory=lambda: DiscussionReplyResult(DiscussionReplyStatus.POSTED, 200, "ok")
+    )
+    calls: list[dict[str, object]] = field(default_factory=list)
+
+    def reply(
+        self,
+        course: Course,
+        task: DiscussionTaskPoint,
+        *,
+        knowledge_id: str,
+        content: str,
+    ) -> DiscussionReplyResult:
+        self.calls.append(
+            {
+                "course": course,
+                "task": task,
+                "knowledge_id": knowledge_id,
+                "content": content,
+            }
+        )
+        return self.result
+
+
 def unsubmitted_quiz_result() -> QuizSubmissionResult:
     return QuizSubmissionResult(
         status=QuizSubmissionStatus.UNSUBMITTED,
@@ -224,6 +255,7 @@ class ExecutorHarness:
     document_client: StubDocumentClient = field(default_factory=StubDocumentClient)
     reading_client: StubReadingClient = field(default_factory=StubReadingClient)
     empty_client: StubEmptyPageClient = field(default_factory=StubEmptyPageClient)
+    discussion_client: StubDiscussionClient = field(default_factory=StubDiscussionClient)
     quiz_client: StubQuizClient = field(default_factory=StubQuizClient)
     playback_calls: list[dict[str, object]] = field(default_factory=list)
     sessions: list[requests.Session] = field(default_factory=list)
@@ -253,6 +285,9 @@ class ExecutorHarness:
             empty_page_client_factory=lambda session: cast(
                 StubEmptyPageClient, remember(self.empty_client, session)
             ),
+            discussion_client_factory=lambda session: cast(
+                StubDiscussionClient, remember(self.discussion_client, session)
+            ),
             quiz_client_factory=lambda session: cast(
                 StubQuizClient, remember(self.quiz_client, session)
             ),
@@ -279,6 +314,7 @@ def make_task_database(
     unopened_policy: str = "retry",
     speed: float = 1.75,
     chapter_concurrency: int | None = None,
+    discussion_auto_reply: bool = False,
 ) -> TaskDatabase:
     engine = create_database_engine(f"sqlite+pysqlite:///{root / 'executor.db'}")
     create_schema(engine)
@@ -293,6 +329,7 @@ def make_task_database(
         config_snapshot: dict[str, object] = {
             "speed": speed,
             "unopened_policy": unopened_policy,
+            "discussion_auto_reply": discussion_auto_reply,
         }
         if chapter_concurrency is not None:
             config_snapshot["chapter_concurrency"] = chapter_concurrency
@@ -512,6 +549,102 @@ def test_quiz_and_unsupported_points_need_attention_without_guessing(tmp_path: P
     assert "provider_unconfigured" in serialized_events
 
 
+def test_discussion_point_needs_attention_when_auto_reply_disabled(tmp_path: Path) -> None:
+    database = make_task_database(tmp_path, [("discuss", ChapterStatus.PENDING)])
+    discussion = DiscussionTaskPoint("discuss-job", "topic-mid", "info", title="Topic")
+    harness = ExecutorHarness(StubChapterClient({"discuss": bundle(discussion)}))
+
+    status, _account = run_executor(
+        database,
+        CourseOutline((chapter("discuss"),)),
+        harness,
+    )
+
+    assert status is TaskStatus.NEEDS_ATTENTION
+    rows = load_chapters(database.engine, database.task_id)
+    assert rows["discuss"].status == ChapterStatus.UNSUBMITTED.value
+    assert rows["discuss"].last_error == "discussion_auto_reply_disabled"
+    assert not harness.discussion_client.calls
+    kinds = [event.kind for event in load_events(database.engine, database.task_id)]
+    assert "chapter.discussion.auto_reply_disabled" in kinds
+
+
+def test_discussion_point_posts_reply_when_auto_reply_enabled(tmp_path: Path) -> None:
+    database = make_task_database(
+        tmp_path,
+        [("discuss", ChapterStatus.PENDING)],
+        discussion_auto_reply=True,
+    )
+    discussion = DiscussionTaskPoint("discuss-job", "topic-mid", "info", title="Topic")
+    harness = ExecutorHarness(StubChapterClient({"discuss": bundle(discussion)}))
+
+    status, _account = run_executor(
+        database,
+        CourseOutline((chapter("discuss"),)),
+        harness,
+    )
+
+    assert status is TaskStatus.SUCCEEDED
+    rows = load_chapters(database.engine, database.task_id)
+    assert rows["discuss"].status == ChapterStatus.SUCCEEDED.value
+    assert harness.discussion_client.calls[0]["task"] is discussion
+    assert harness.discussion_client.calls[0]["knowledge_id"] == "knowledge-default"
+    kinds = [event.kind for event in load_events(database.engine, database.task_id)]
+    assert "chapter.discussion.completed" in kinds
+
+
+def test_discussion_pending_review_and_rejection_are_reported(tmp_path: Path) -> None:
+    database = make_task_database(
+        tmp_path,
+        [("pending", ChapterStatus.PENDING), ("rejected", ChapterStatus.PENDING)],
+        discussion_auto_reply=True,
+    )
+    pending_client = StubDiscussionClient(
+        DiscussionReplyResult(DiscussionReplyStatus.PENDING_REVIEW, 200, "awaiting review")
+    )
+    rejected_client = StubDiscussionClient(
+        DiscussionReplyResult(DiscussionReplyStatus.REJECTED, 200, "reply limit reached")
+    )
+    chapter_client = StubChapterClient(
+        {
+            "pending": bundle(DiscussionTaskPoint("job-1", "mid-1", "info")),
+            "rejected": bundle(DiscussionTaskPoint("job-2", "mid-2", "info")),
+        }
+    )
+    runtime = StubAccountRuntime(
+        StubAccountSession(
+            StubCourseClient(
+                CourseOutline((chapter("pending"), chapter("rejected")))
+            )
+        )
+    )
+    executor = StudyTaskExecutor(
+        engine=database.engine,
+        account_runtime=runtime,  # type: ignore[arg-type]
+        chapter_client_factory=lambda _session: chapter_client,
+        discussion_client_factory=lambda session: cast(
+            StubDiscussionClient,
+            pending_client
+            if chapter_client.calls and chapter_client.calls[-1] == "pending"
+            else rejected_client,
+        ),
+    )
+
+    status = executor.execute(
+        database.claim,
+        WorkerControl(engine=database.engine, claim=database.claim),
+    )
+
+    assert status is TaskStatus.NEEDS_ATTENTION
+    rows = load_chapters(database.engine, database.task_id)
+    assert rows["pending"].status == ChapterStatus.UNSUBMITTED.value
+    assert rows["pending"].last_error == "discussion_reply_pending_review"
+    assert rows["rejected"].status == ChapterStatus.FAILED.value
+    assert rows["rejected"].last_error == "platform_completion_rejected"
+    kinds = [event.kind for event in load_events(database.engine, database.task_id)]
+    assert "chapter.discussion.pending_review" in kinds
+
+
 def test_submitted_quiz_completes_without_exposing_answers(tmp_path: Path) -> None:
     database = make_task_database(tmp_path, [("quiz", ChapterStatus.PENDING)])
     quiz_client = StubQuizClient(
@@ -729,7 +862,7 @@ def test_mixed_known_and_unresolved_attachments_cannot_succeed(tmp_path: Path) -
     assert status is TaskStatus.NEEDS_ATTENTION
     row = load_chapters(database.engine, database.task_id)["one"]
     assert row.status == ChapterStatus.FAILED.value
-    assert row.last_error == "unsupported_task_point"
+    assert row.last_error == "unresolved_task_points"
 
 
 def test_unexpected_chapter_error_is_sanitized_then_reraised(tmp_path: Path) -> None:

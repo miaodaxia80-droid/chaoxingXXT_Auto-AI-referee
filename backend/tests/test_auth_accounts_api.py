@@ -477,6 +477,7 @@ def test_account_update_requires_auth_and_csrf_and_returns_only_masked_secrets()
                     "speed": 1.8,
                     "chapter_concurrency": 4,
                     "unopened_policy": "skip",
+                    "discussion_auto_reply": True,
                     "enabled": False,
                 },
             )
@@ -488,6 +489,7 @@ def test_account_update_requires_auth_and_csrf_and_returns_only_masked_secrets()
             assert payload["speed"] == 1.8
             assert payload["chapter_concurrency"] == 4
             assert payload["unopened_policy"] == "skip"
+            assert payload["discussion_auto_reply"] is True
             assert payload["enabled"] is False
             assert payload["has_password"] is True
             assert payload["has_cookies"] is True
