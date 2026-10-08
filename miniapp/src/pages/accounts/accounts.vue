@@ -22,6 +22,7 @@ const form = reactive({
   speed: 1.0,
   chapter_concurrency: 1,
   unopened_policy: 'retry' as 'retry' | 'skip',
+  discussion_auto_reply: false,
   clear_password: false,
   clear_cookies: false,
 })
@@ -58,6 +59,7 @@ function openCreate() {
     speed: 1.0,
     chapter_concurrency: 1,
     unopened_policy: 'retry',
+    discussion_auto_reply: false,
     clear_password: false,
     clear_cookies: false,
   })
@@ -74,6 +76,7 @@ function openEdit(account: Account) {
     speed: account.speed,
     chapter_concurrency: account.chapter_concurrency,
     unopened_policy: account.unopened_policy,
+    discussion_auto_reply: account.discussion_auto_reply,
     clear_password: false,
     clear_cookies: false,
   })
@@ -101,6 +104,7 @@ async function submit() {
       payload.speed = form.speed
       payload.chapter_concurrency = form.chapter_concurrency
       payload.unopened_policy = form.unopened_policy
+      payload.discussion_auto_reply = form.discussion_auto_reply
       await api.updateAccount(editing.value.id, payload)
     } else {
       await api.createAccount({
@@ -111,6 +115,7 @@ async function submit() {
         speed: form.speed,
         chapter_concurrency: form.chapter_concurrency,
         unopened_policy: form.unopened_policy,
+        discussion_auto_reply: form.discussion_auto_reply,
       })
     }
     showForm.value = false
@@ -249,6 +254,13 @@ onPullDownRefresh(async () => {
                 <radio value="skip" :checked="form.unopened_policy === 'skip'" />直接跳过
               </label>
             </radio-group>
+          </view>
+          <view class="row field-label">
+            <text>讨论题自动回帖</text>
+            <switch
+              :checked="form.discussion_auto_reply"
+              @change="(e: any) => (form.discussion_auto_reply = Boolean(e.detail.value))"
+            />
           </view>
           <view class="sheet-actions">
             <button class="btn-plain" size="mini" @click="showForm = false">取消</button>

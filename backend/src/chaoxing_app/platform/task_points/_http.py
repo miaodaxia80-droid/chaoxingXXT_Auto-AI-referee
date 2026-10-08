@@ -40,7 +40,7 @@ class TaskPointHTTPClient:
         url: str,
         *,
         operation: str,
-        params: Mapping[str, QueryValue],
+        params: Mapping[str, QueryValue] | None = None,
     ) -> requests.Response:
         try:
             response = self._session.request(

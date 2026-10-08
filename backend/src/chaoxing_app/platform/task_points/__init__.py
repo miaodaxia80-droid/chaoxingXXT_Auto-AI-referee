@@ -1,6 +1,7 @@
 from chaoxing_app.platform.task_points.cards import (
     ChapterTaskBundle,
     ChapterTaskClient,
+    DiscussionTaskPoint,
     DocumentTaskPoint,
     JobDefaults,
     QuizTaskPoint,
@@ -9,6 +10,12 @@ from chaoxing_app.platform.task_points.cards import (
     UnsupportedTaskPoint,
     VideoTaskPoint,
     parse_task_card_page,
+)
+from chaoxing_app.platform.task_points.discussion import (
+    DEFAULT_REPLY_CONTENT,
+    DiscussionReplyResult,
+    DiscussionReplyStatus,
+    DiscussionTaskClient,
 )
 from chaoxing_app.platform.task_points.document import (
     DocumentCompletionResult,
@@ -69,12 +76,17 @@ from chaoxing_app.platform.task_points.video import (
 )
 
 __all__ = [
+    "DEFAULT_REPLY_CONTENT",
     "SUPPORTED_PROVIDER_CAPABILITIES",
     "AnswerProvider",
     "AnswerProviderCapability",
     "CallbackAnswerProvider",
     "ChapterTaskBundle",
     "ChapterTaskClient",
+    "DiscussionReplyResult",
+    "DiscussionReplyStatus",
+    "DiscussionTaskClient",
+    "DiscussionTaskPoint",
     "DocumentCompletionResult",
     "DocumentTaskClient",
     "DocumentTaskPoint",

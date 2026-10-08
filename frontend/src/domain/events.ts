@@ -44,6 +44,9 @@ export const EVENT_LABELS: Record<string, string> = {
   'chapter.quiz.saved': '测验答案已保存',
   'chapter.quiz.unsubmitted': '测验暂未提交',
   'chapter.quiz.rejected': '测验提交失败',
+  'chapter.discussion.completed': '讨论回复已发布',
+  'chapter.discussion.auto_reply_disabled': '讨论任务未自动回帖',
+  'chapter.discussion.pending_review': '讨论回复等待审核',
   'operator.intervention_resolved': '待处理事项已确认',
   'notification.sent': '通知已发送',
   'notification.failed': '通知发送失败',
@@ -61,6 +64,8 @@ export const REASON_MESSAGES: Record<string, string> = {
   quiz_requires_answers: '测验仍有题目无法作答，需要手动处理。',
   unsupported_task_point: '章节包含当前版本暂不支持的任务点。',
   unresolved_task_points: '章节中有任务点无法识别，需要检查页面内容。',
+  discussion_auto_reply_disabled: '章节包含讨论任务，账号未开启自动回帖，请手动回复或在账号设置中开启。',
+  discussion_reply_pending_review: '讨论回复已提交，正在等待平台审核。',
   provider_unconfigured: '尚未配置可用的答题服务。',
   coverage_below_threshold: '可回答题目比例不足，测验未自动提交。',
   provider_rejected: '通知服务拒绝了本次发送请求。',
@@ -119,6 +124,7 @@ const PAYLOAD_LABELS: Record<string, string> = {
   play_time: '播放进度',
   duration: '总时长',
   unopened_policy: '未开放策略',
+  title: '标题',
 }
 
 export function payloadEntries(event: SystemEvent): Array<{ label: string; value: string }> {

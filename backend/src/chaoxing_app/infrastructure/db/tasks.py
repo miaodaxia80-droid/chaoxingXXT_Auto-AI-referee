@@ -201,5 +201,6 @@ def public_account_snapshot(account: Account) -> dict[str, Any]:
         "speed": account.speed,
         "chapter_concurrency": account.chapter_concurrency,
         "unopened_policy": account.unopened_policy,
+        "discussion_auto_reply": account.discussion_auto_reply,
         "user_agent": account.user_agent,
     }

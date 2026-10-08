@@ -11,6 +11,7 @@ from chaoxing_app.platform.errors import PlatformAuthenticationError, PlatformPa
 from chaoxing_app.platform.models import Chapter, Course
 from chaoxing_app.platform.task_points.cards import (
     ChapterTaskClient,
+    DiscussionTaskPoint,
     DocumentTaskPoint,
     QuizTaskPoint,
     ReadTaskPoint,
@@ -171,6 +172,38 @@ def test_jobid_only_document_card_is_parsed_as_task() -> None:
     assert task.object_id == "4171653dd2def09d357717a47f452954"
     assert task.jtoken == "9391ea16a1a80e94c81c49f6434f580e"
     assert task.other_info == "nodeId_1087358235-cpi_497744587"
+
+
+def test_insertbbs_discussion_cards_are_parsed_as_tasks() -> None:
+    # 章节讨论卡片 type 为空, 模块名在 property.module 上
+    page = parse_task_card_page(
+        """<script>mArg={"attachments":[{
+        "begins":0,"ends":0,"job":true,"jobid":"1766296524413677",
+        "otherInfo":"nodeId_1087365292-cpi_497744587",
+        "mid":"6864150493591766296524415","aid":2157718628,
+        "property":{"jobid":"1766296524413677","module":"insertbbs",
+            "title":"Discussion A","isJob":true,"replytimes":"1"}
+        },{
+        "jobid":"1766296864920609","mid":"16033776146381766296864921",
+        "otherInfo":"nodeId_1087365292-cpi_497744587",
+        "property":{"module":"inserttopic","title":"Discussion B"}
+        },{
+        "job":true,"jobid":"missing-topic","property":{"module":"insertbbs"}
+        }]};</script>"""
+    )
+
+    assert page.attachment_count == 3
+    assert page.unresolved_attachment_count == 0
+    first = cast(DiscussionTaskPoint, page.tasks[0])
+    assert first.job_id == "1766296524413677"
+    assert first.mid == "6864150493591766296524415"
+    assert first.title == "Discussion A"
+    assert first.other_info == "nodeId_1087365292-cpi_497744587"
+    second = cast(DiscussionTaskPoint, page.tasks[1])
+    assert second.mid == "16033776146381766296864921"
+    unsupported = cast(UnsupportedTaskPoint, page.tasks[2])
+    assert unsupported.job_id == "missing-topic"
+    assert unsupported.reason == "missing discussion topic id"
 
 
 def test_numeric_defaults_and_jobid_are_coerced_to_text() -> None:
