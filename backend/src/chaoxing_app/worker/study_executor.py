@@ -49,6 +49,9 @@ from chaoxing_app.platform.task_points.empty_page import (
 )
 from chaoxing_app.platform.task_points.quiz import (
     AnswerProvider,
+    ProviderAnswer,
+    QuizQuestion,
+    QuizQuestionType,
     QuizSubmissionMode,
     QuizSubmissionResult,
     QuizSubmissionStatus,
@@ -205,6 +208,20 @@ def _playback_runner(
     progress: ProgressCallback,
 ) -> PlaybackPort:
     return MediaPlaybackRunner(client=client, control=control, progress=progress)
+
+
+def _normalize_reply_text(raw: object) -> str:
+    if isinstance(raw, ProviderAnswer):
+        raw = raw.value
+    if isinstance(raw, str):
+        text = raw
+    elif isinstance(raw, (tuple, list)):
+        text = " ".join(part for part in raw if isinstance(part, str))
+    else:
+        return ""
+    # Collapse to a single capped line so provider output stays a plain reply.
+    text = " ".join(text.split())
+    return text[:200]
 
 
 class TaskPointRejected(PlatformError):
@@ -553,7 +570,10 @@ class StudyTaskExecutor:
                     progress=progress,
                 )
                 return
-            if any(isinstance(task_point, QuizTaskPoint) for task_point in bundle.tasks):
+            if any(
+                isinstance(task_point, (QuizTaskPoint, DiscussionTaskPoint))
+                for task_point in bundle.tasks
+            ):
                 with self._answer_provider_runtime.open(snapshot.config) as binding:
                     attention, attention_reason = self._run_task_points(
                         snapshot=snapshot,
@@ -709,6 +729,7 @@ class StudyTaskExecutor:
                     account=account,
                     control=control,
                     progress=progress,
+                    answer_binding=answer_binding,
                 )
                 if attention is None and discussion_attention[0] is not None:
                     attention, attention_reason = discussion_attention
@@ -875,6 +896,7 @@ class StudyTaskExecutor:
         account: AccountStudySession,
         control: WorkerControl,
         progress: ClaimedTaskProgress,
+        answer_binding: AnswerProviderBinding | None,
     ) -> tuple[ChapterStatus | None, str | None]:
         if not self._discussion_auto_reply(snapshot.config):
             progress.record_event(
@@ -889,6 +911,8 @@ class StudyTaskExecutor:
             if bundle.defaults and bundle.defaults.knowledge_id
             else chapter.chapter_id
         )
+        provider = answer_binding.provider if answer_binding else None
+        content, source = self._discussion_reply_content(provider, task_point, course)
         client = self._discussion_client_factory(account.session)
         result = self._authenticated(
             account,
@@ -896,7 +920,7 @@ class StudyTaskExecutor:
                 course,
                 task_point,
                 knowledge_id=knowledge_id,
-                content=DEFAULT_REPLY_CONTENT,
+                content=content,
             ),
             control,
         )
@@ -904,7 +928,15 @@ class StudyTaskExecutor:
             DiscussionReplyStatus.POSTED,
             DiscussionReplyStatus.ALREADY_REPLIED,
         }:
-            self._record_point_completed(progress, chapter.chapter_id, "discussion")
+            progress.record_event(
+                chapter.chapter_id,
+                kind="chapter.discussion.completed",
+                payload={
+                    "task_type": "discussion",
+                    "title": task_point.title,
+                    "reply_source": source,
+                },
+            )
             return None, None
         if result.status is DiscussionReplyStatus.PENDING_REVIEW:
             progress.record_event(
@@ -915,6 +947,38 @@ class StudyTaskExecutor:
             )
             return ChapterStatus.UNSUBMITTED, "discussion_reply_pending_review"
         raise TaskPointRejected
+
+    @staticmethod
+    def _discussion_reply_content(
+        provider: AnswerProvider | None,
+        task_point: DiscussionTaskPoint,
+        course: Course,
+    ) -> tuple[str, str]:
+        configured = getattr(provider, "configured", True) if provider is not None else False
+        if provider is None or not configured:
+            return DEFAULT_REPLY_CONTENT, "default"
+        prompt_parts = [
+            "请针对下面的课堂讨论题写一条简短的中文回复"
+            "(80字以内, 只要回复正文, 不要称呼、序号和解释):"
+        ]
+        if task_point.title.strip():
+            prompt_parts.append(task_point.title.strip())
+        if task_point.detail.strip():
+            prompt_parts.append(task_point.detail.strip())
+        question = QuizQuestion(
+            question_id=f"discussion-{task_point.job_id}",
+            title="\n".join(prompt_parts),
+            question_type=QuizQuestionType.SHORT_ANSWER,
+            type_code="4",
+        )
+        try:
+            raw = provider.answer(question, course_context=course.title)
+        except Exception:
+            return DEFAULT_REPLY_CONTENT, "default"
+        text = _normalize_reply_text(raw)
+        if not text:
+            return DEFAULT_REPLY_CONTENT, "default"
+        return text, "ai"
 
     def _run_reading(
         self,
@@ -967,7 +1031,6 @@ class StudyTaskExecutor:
             "document": "chapter.document.completed",
             "reading": "chapter.reading.completed",
             "empty_page": "chapter.empty_page.completed",
-            "discussion": "chapter.discussion.completed",
         }.get(task_type, "chapter.task_point_completed")
         progress.record_event(
             chapter_id,

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import threading
 import time
-from collections.abc import Callable, Mapping
-from contextlib import AbstractContextManager
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -14,6 +14,7 @@ import requests
 from sqlalchemy import Engine, func, select, update
 from sqlalchemy.orm import Session
 
+from chaoxing_app.application.answer_runtime import AnswerProviderBinding
 from chaoxing_app.domain.tasks import ChapterStatus, DesiredTaskState, TaskStatus
 from chaoxing_app.infrastructure.db.engine import create_database_engine, create_schema
 from chaoxing_app.infrastructure.db.models import (
@@ -38,12 +39,15 @@ from chaoxing_app.platform.task_points.cards import (
     VideoTaskPoint,
 )
 from chaoxing_app.platform.task_points.discussion import (
+    DEFAULT_REPLY_CONTENT,
     DiscussionReplyResult,
     DiscussionReplyStatus,
 )
 from chaoxing_app.platform.task_points.document import DocumentCompletionResult
 from chaoxing_app.platform.task_points.empty_page import EmptyPageCompletionResult
 from chaoxing_app.platform.task_points.quiz import (
+    ProviderAnswer,
+    QuizQuestion,
     QuizSubmissionMode,
     QuizSubmissionResult,
     QuizSubmissionStatus,
@@ -152,6 +156,31 @@ class StubEmptyPageClient:
 
 
 @dataclass(slots=True)
+class StubAnswerProvider:
+    configured: bool = True
+    result: object = ProviderAnswer("杯子可以做成帆船的形状")
+    error: Exception | None = None
+    questions: list[QuizQuestion] = field(default_factory=list)
+
+    def answer(
+        self, question: QuizQuestion, *, course_context: str = ""
+    ) -> object:
+        self.questions.append(question)
+        if self.error is not None:
+            raise self.error
+        return self.result
+
+
+@dataclass(slots=True)
+class StubAnswerRuntime:
+    binding: AnswerProviderBinding = field(default_factory=AnswerProviderBinding)
+
+    @contextmanager
+    def open(self, _config: Mapping[str, object]) -> Iterator[AnswerProviderBinding]:
+        yield self.binding
+
+
+@dataclass(slots=True)
 class StubDiscussionClient:
     result: DiscussionReplyResult = field(
         default_factory=lambda: DiscussionReplyResult(DiscussionReplyStatus.POSTED, 200, "ok")
@@ -257,6 +286,7 @@ class ExecutorHarness:
     empty_client: StubEmptyPageClient = field(default_factory=StubEmptyPageClient)
     discussion_client: StubDiscussionClient = field(default_factory=StubDiscussionClient)
     quiz_client: StubQuizClient = field(default_factory=StubQuizClient)
+    answer_runtime: StubAnswerRuntime = field(default_factory=StubAnswerRuntime)
     playback_calls: list[dict[str, object]] = field(default_factory=list)
     sessions: list[requests.Session] = field(default_factory=list)
 
@@ -291,6 +321,7 @@ class ExecutorHarness:
             quiz_client_factory=lambda session: cast(
                 StubQuizClient, remember(self.quiz_client, session)
             ),
+            answer_provider_runtime=self.answer_runtime,
             video_client_factory=lambda session: cast(object, remember(object(), session)),  # type: ignore[arg-type]
             playback_factory=lambda _client, _control, progress: StubPlayback(
                 progress,
@@ -589,8 +620,78 @@ def test_discussion_point_posts_reply_when_auto_reply_enabled(tmp_path: Path) ->
     assert rows["discuss"].status == ChapterStatus.SUCCEEDED.value
     assert harness.discussion_client.calls[0]["task"] is discussion
     assert harness.discussion_client.calls[0]["knowledge_id"] == "knowledge-default"
-    kinds = [event.kind for event in load_events(database.engine, database.task_id)]
-    assert "chapter.discussion.completed" in kinds
+    # No provider bound: falls back to the default reply text.
+    assert harness.discussion_client.calls[0]["content"] == DEFAULT_REPLY_CONTENT
+    completed = [
+        event
+        for event in load_events(database.engine, database.task_id)
+        if event.kind == "chapter.discussion.completed"
+    ]
+    assert completed and completed[0].payload["reply_source"] == "default"
+
+
+def test_discussion_point_uses_ai_reply_when_provider_available(tmp_path: Path) -> None:
+    database = make_task_database(
+        tmp_path,
+        [("discuss", ChapterStatus.PENDING)],
+        discussion_auto_reply=True,
+    )
+    discussion = DiscussionTaskPoint(
+        "discuss-job",
+        "topic-mid",
+        "info",
+        title="食堂排队讨论",
+        detail="请提出解决方案",
+    )
+    provider = StubAnswerProvider()
+    harness = ExecutorHarness(StubChapterClient({"discuss": bundle(discussion)}))
+    harness.answer_runtime.binding = AnswerProviderBinding(
+        provider=provider, unavailable_reason=""
+    )
+
+    status, _account = run_executor(
+        database,
+        CourseOutline((chapter("discuss"),)),
+        harness,
+    )
+
+    assert status is TaskStatus.SUCCEEDED
+    call = harness.discussion_client.calls[0]
+    assert call["content"] == "杯子可以做成帆船的形状"
+    # The provider receives the topic title and detail as prompt context.
+    assert "食堂排队讨论" in provider.questions[0].title
+    assert "请提出解决方案" in provider.questions[0].title
+    completed = [
+        event
+        for event in load_events(database.engine, database.task_id)
+        if event.kind == "chapter.discussion.completed"
+    ]
+    assert completed and completed[0].payload["reply_source"] == "ai"
+
+
+def test_discussion_point_falls_back_to_default_on_provider_failure(
+    tmp_path: Path,
+) -> None:
+    database = make_task_database(
+        tmp_path,
+        [("discuss", ChapterStatus.PENDING)],
+        discussion_auto_reply=True,
+    )
+    discussion = DiscussionTaskPoint("discuss-job", "topic-mid", "info", title="Topic")
+    harness = ExecutorHarness(StubChapterClient({"discuss": bundle(discussion)}))
+    harness.answer_runtime.binding = AnswerProviderBinding(
+        provider=StubAnswerProvider(error=RuntimeError("provider down")),
+        unavailable_reason="",
+    )
+
+    status, _account = run_executor(
+        database,
+        CourseOutline((chapter("discuss"),)),
+        harness,
+    )
+
+    assert status is TaskStatus.SUCCEEDED
+    assert harness.discussion_client.calls[0]["content"] == DEFAULT_REPLY_CONTENT
 
 
 def test_discussion_pending_review_and_rejection_are_reported(tmp_path: Path) -> None:
