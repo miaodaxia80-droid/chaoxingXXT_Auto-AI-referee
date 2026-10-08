@@ -87,6 +87,7 @@ def test_integration_reads_require_login_and_writes_require_csrf() -> None:
                     "endpoint": "https://tk.enncy.cn/query",
                     "base_url": None,
                     "model": None,
+                    "headers": None,
                     "search": None,
                     "allow_unsafe_endpoint": False,
                     },
@@ -667,3 +668,87 @@ def test_answer_test_reports_failures_without_exception_text() -> None:
         assert response.json()["ok"] is False
         assert response.json()["reason"] == "provider_http_error"
         assert "secret-bearing" not in response.text
+
+
+def test_openai_compatible_custom_headers_roundtrip_and_are_hidden_from_users() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        app, client = make_client(temp_dir)
+        with client:
+            csrf = bootstrap_and_login(client)
+            path = "/api/v1/settings/integrations/answer"
+            configured = client.patch(
+                path,
+                headers={"X-CSRF-Token": csrf},
+                json={
+                    "enabled": True,
+                    "provider": "openai_compatible",
+                    "base_url": "https://opencode.example.test/zen/go/v1",
+                    "model": "some-model",
+                    "api_key": "private-openai-key",
+                    "headers": {
+                        "x-opencode-session": "routing-session-1",
+                        "X-Team-Tag": "console",
+                    },
+                },
+            )
+            assert configured.status_code == 200, configured.text
+            assert configured.json()["config"]["headers"] == {
+                "x-opencode-session": "routing-session-1",
+                "X-Team-Tag": "console",
+            }
+
+            public = client.get("/api/v1/settings/answer-public")
+            assert public.status_code == 200
+            assert "headers" not in public.json()["config"]
+
+            from chaoxing_app.infrastructure.db.integrations import (
+                IntegrationSettingRepository,
+            )
+
+            repository = IntegrationSettingRepository(secret_box=app.state.secret_box)
+            with Session(app.state.engine) as session:
+                runtime = repository.answer_runtime_configuration(
+                    session,
+                    expected_revision=configured.json()["revision"],
+                )
+            assert runtime is not None
+            assert runtime.headers == {
+                "x-opencode-session": "routing-session-1",
+                "X-Team-Tag": "console",
+            }
+
+
+def test_provider_headers_reject_invalid_names_values_and_foreign_providers() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        _app, client = make_client(temp_dir)
+        with client:
+            csrf = bootstrap_and_login(client)
+            path = "/api/v1/settings/integrations/answer"
+            base = {
+                "provider": "openai_compatible",
+                "base_url": "https://llm.example.test/v1",
+                "model": "m",
+            }
+            for bad_headers in (
+                "x-a: b",
+                {"bad name": "v"},
+                {"x-inject": "v\r\nforged: yes"},
+                {str(index): "v" for index in range(17)},
+            ):
+                rejected = client.patch(
+                    path,
+                    headers={"X-CSRF-Token": csrf},
+                    json={**base, "headers": bad_headers},
+                )
+                assert rejected.status_code == 422
+
+            foreign = client.patch(
+                path,
+                headers={"X-CSRF-Token": csrf},
+                json={
+                    "provider": "yanxi",
+                    "endpoint": "https://yanxi.example.test/query",
+                    "headers": {"x-a": "b"},
+                },
+            )
+            assert foreign.status_code == 422

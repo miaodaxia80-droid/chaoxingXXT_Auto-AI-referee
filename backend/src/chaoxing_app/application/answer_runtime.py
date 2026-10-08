@@ -384,6 +384,7 @@ def build_answer_provider(
             model=model_override or configuration.model,
             session=session,
             allow_unsafe_endpoint=configuration.allow_unsafe_endpoint,
+            headers=configuration.headers,
         )
     return SiliconFlowAnswerProvider(
         api_key=configuration.credential or "",

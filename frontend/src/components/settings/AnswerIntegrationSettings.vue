@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useMutation, useQuery, useQueryClient } from '@tanstack/vue-query'
-import { Bot, FlaskConical, RefreshCw, Save, Server } from 'lucide-vue-next'
+import { Bot, FlaskConical, Plus, RefreshCw, Save, Server, Trash2 } from 'lucide-vue-next'
 import {
   NAlert,
   NButton,
@@ -44,6 +44,11 @@ import type {
 
 const emit = defineEmits<{ 'dirty-change': [dirty: boolean] }>()
 
+interface HeaderRow {
+  name: string
+  value: string
+}
+
 interface AnswerForm {
   enabled: boolean
   provider: AnswerProviderKind
@@ -52,6 +57,7 @@ interface AnswerForm {
   endpoint: string
   baseUrl: string
   model: string
+  headers: HeaderRow[]
   search: boolean
   allowUnsafeEndpoint: boolean
   tokens: string
@@ -81,6 +87,7 @@ const form = reactive<AnswerForm>({
   endpoint: '',
   baseUrl: '',
   model: '',
+  headers: [],
   search: false,
   allowUnsafeEndpoint: false,
   tokens: '',
@@ -241,9 +248,52 @@ const testDisabledReason = computed(() => {
 const thresholdLabel = computed(() => `${Math.round(form.threshold * 100)}%`)
 const loadError = computed(() => errorText(answer.error.value, '答案服务设置读取失败'))
 
+const OPENCODE_HOST_PATTERN = /(^|\.)opencode\.ai$/i
+const OPENCODE_SESSION_HEADER = 'x-opencode-session'
+
+const isOpenCodeEndpoint = computed(() => {
+  if (form.provider !== 'openai_compatible' || !form.baseUrl.trim()) return false
+  try {
+    return OPENCODE_HOST_PATTERN.test(new URL(form.baseUrl.trim()).hostname)
+  } catch {
+    return false
+  }
+})
+
+watch(isOpenCodeEndpoint, (detected) => {
+  if (!detected) return
+  const exists = form.headers.some(
+    (row) => row.name.trim().toLowerCase() === OPENCODE_SESSION_HEADER,
+  )
+  if (!exists) {
+    form.headers.push({
+      name: OPENCODE_SESSION_HEADER,
+      value: crypto.randomUUID(),
+    })
+  }
+})
+
+function serializeHeaders(): Record<string, string> {
+  const result: Record<string, string> = {}
+  for (const row of form.headers) {
+    const name = row.name.trim()
+    if (name) result[name] = row.value
+  }
+  return result
+}
+
+function addHeaderRow() {
+  form.headers.push({ name: '', value: '' })
+}
+
+function removeHeaderRow(index: number) {
+  form.headers.splice(index, 1)
+}
+
 function formSnapshot(value: AnswerForm): AnswerForm {
   return {
     ...value,
+    headers: value.headers.map((row) => ({ ...row })),
     profile: cloneAnswerProfile(value.profile),
   }
 }
@@ -257,6 +307,10 @@ function applyAnswer(value: AnswerIntegration) {
     endpoint: value.config.endpoint ?? '',
     baseUrl: value.config.base_url ?? '',
     model: value.config.model ?? '',
+    headers: Object.entries(value.config.headers ?? {}).map(([name, value]) => ({
+      name,
+      value,
+    })),
     search: value.config.search ?? false,
     allowUnsafeEndpoint: value.config.allow_unsafe_endpoint,
     tokens: '',
@@ -315,6 +369,9 @@ function buildPayload(): UpdateAnswerIntegrationInput | null {
   if (isModelProvider.value) {
     payload.base_url = form.baseUrl.trim()
     payload.model = form.model.trim()
+  }
+  if (form.provider === 'openai_compatible') {
+    payload.headers = serializeHeaders()
   }
   if (form.provider === 'like') {
     payload.model = form.model.trim()
@@ -457,6 +514,47 @@ function errorText(error: unknown, fallback: string): string {
               :placeholder="form.provider === 'like' ? '可选' : '例如 gpt-4o-mini'"
             />
           </NFormItem>
+          <NFormItem
+            v-if="form.provider === 'openai_compatible'"
+            label="自定义请求头"
+            class="full"
+          >
+            <div class="headers-field">
+              <NAlert
+                v-if="isOpenCodeEndpoint"
+                type="info"
+                :bordered="false"
+                class="opencode-note"
+              >
+                检测到 OpenCode 服务地址，已自动填入 x-opencode-session 路由头。删除该行即可停用。
+              </NAlert>
+              <div
+                v-for="(row, index) in form.headers"
+                :key="index"
+                class="header-row"
+              >
+                <NInput
+                  v-model:value="row.name"
+                  placeholder="请求头名称"
+                  aria-label="请求头名称"
+                />
+                <NInput
+                  v-model:value="row.value"
+                  placeholder="请求头值"
+                  aria-label="请求头值"
+                />
+                <IconAction
+                  label="删除请求头"
+                  :icon="Trash2"
+                  @click="removeHeaderRow(index)"
+                />
+              </div>
+              <NButton quaternary size="small" @click="addHeaderRow">
+                <template #icon><Plus /></template>
+                添加请求头
+              </NButton>
+            </div>
+          </NFormItem>
           <NFormItem v-if="form.provider === 'like'" label="联网搜索">
             <div class="inline-switch-control">
               <NSwitch v-model:value="form.search" aria-label="启用联网搜索" />
@@ -587,6 +685,23 @@ function errorText(error: unknown, fallback: string): string {
   display: grid;
   width: 100%;
   gap: 7px;
+}
+
+.headers-field {
+  display: grid;
+  width: 100%;
+  gap: 8px;
+}
+
+.headers-field .opencode-note {
+  margin: 0;
+}
+
+.header-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
 }
 
 .provider-switch-note {

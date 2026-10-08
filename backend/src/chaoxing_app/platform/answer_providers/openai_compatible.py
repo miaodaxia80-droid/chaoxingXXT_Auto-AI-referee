@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Mapping
 from typing import ClassVar, Final
 
 import requests
@@ -49,9 +50,11 @@ class OpenAICompatibleAnswerProvider(SafeAnswerProvider):
         timeout: RequestTimeout = DEFAULT_TIMEOUT,
         tls_verify: TLSVerify = True,
         allow_unsafe_endpoint: bool = False,
+        headers: Mapping[str, str] | None = None,
     ) -> None:
         self._model = require_nonempty(model, field="model")
         self._api_key = require_nonempty(api_key, field="API key")
+        self._extra_headers = dict(headers or {})
         self._http = JSONHTTPClient(
             endpoint=_chat_completions_url(
                 base_url,
@@ -72,6 +75,7 @@ class OpenAICompatibleAnswerProvider(SafeAnswerProvider):
         payload = self._http.request(
             "POST",
             headers={
+                **self._extra_headers,
                 "Authorization": f"Bearer {self._api_key}",
                 "Content-Type": "application/json",
             },

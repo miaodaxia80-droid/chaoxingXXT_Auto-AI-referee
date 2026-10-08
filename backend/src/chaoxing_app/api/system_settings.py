@@ -108,11 +108,13 @@ def get_answer_public_settings(
     secret_box: SecretBox = Depends(get_secret_box),
 ) -> AnswerPublicResponse:
     view = IntegrationSettingRepository(secret_box=secret_box).get_answer(db)
+    config = dict(view.config)
+    config.pop("headers", None)
     return AnswerPublicResponse(
         enabled=view.enabled,
         provider=view.provider.value,
         submit_mode=view.submit_mode.value,
         threshold=view.threshold,
-        config=view.config,
+        config=config,
         profile=view.profile,
     )
