@@ -125,6 +125,7 @@ const PAYLOAD_LABELS: Record<string, string> = {
   duration: '总时长',
   unopened_policy: '未开放策略',
   title: '标题',
+  reply_source: '回复来源',
 }
 
 export function payloadEntries(event: SystemEvent): Array<{ label: string; value: string }> {

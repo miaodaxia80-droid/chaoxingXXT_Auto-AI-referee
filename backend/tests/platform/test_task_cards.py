@@ -175,9 +175,15 @@ def test_jobid_only_document_card_is_parsed_as_task() -> None:
 
 
 def test_insertbbs_discussion_cards_are_parsed_as_tasks() -> None:
-    # 章节讨论卡片 type 为空, 模块名在 property.module 上
+    # 章节讨论卡片 type 为空, 模块名在 property.module 上;
+    # detail 只在渲染后的 iframe data 属性里, 需从页面 HTML 中提取.
     page = parse_task_card_page(
-        """<script>mArg={"attachments":[{
+        """<p><iframe class="ans-module ans-insertbbs-module" module="insertbbs"
+        data="{&quot;title&quot;:&quot;Discussion A&quot;,
+        &quot;detail&quot;:&quot;请思考并回复&quot;,&quot;mid&quot;:&quot;6864150493591766296524415&quot;,
+        &quot;jobid&quot;:&quot;1766296524413677&quot;}"
+        ></iframe></p>
+        <script>mArg={"attachments":[{
         "begins":0,"ends":0,"job":true,"jobid":"1766296524413677",
         "otherInfo":"nodeId_1087365292-cpi_497744587",
         "mid":"6864150493591766296524415","aid":2157718628,
@@ -198,6 +204,7 @@ def test_insertbbs_discussion_cards_are_parsed_as_tasks() -> None:
     assert first.job_id == "1766296524413677"
     assert first.mid == "6864150493591766296524415"
     assert first.title == "Discussion A"
+    assert first.detail == "请思考并回复"
     assert first.other_info == "nodeId_1087365292-cpi_497744587"
     second = cast(DiscussionTaskPoint, page.tasks[1])
     assert second.mid == "16033776146381766296864921"

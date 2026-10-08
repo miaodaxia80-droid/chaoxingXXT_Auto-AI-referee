@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html as html_module
 import json
 import re
 from collections.abc import Mapping
@@ -85,6 +86,7 @@ class DiscussionTaskPoint:
     mid: str
     other_info: str
     title: str = ""
+    detail: str = ""
     enc: str = ""
     aid: str = ""
 
@@ -97,6 +99,7 @@ class UnsupportedTaskPoint:
 
 
 _DISCUSSION_MODULES = frozenset({"insertbbs", "inserttopic"})
+_DISCUSSION_IFRAME = re.compile(r'ans-insertbbs-module[^>]*\bdata="([^"]+)"')
 
 type TaskPoint = (
     VideoTaskPoint
@@ -255,7 +258,31 @@ def _media_kind(
     return None
 
 
-def _parse_task(card: Mapping[str, object]) -> TaskPoint | None:
+def _discussion_details(page_html: str) -> dict[str, str]:
+    # 讨论题详情只在渲染后的 insertbbs iframe data 属性里, mArg 的 property 中不带.
+    # 这里按 jobid/mid 建索引, 供任务点补充 detail 字段.
+    details: dict[str, str] = {}
+    for match in _DISCUSSION_IFRAME.finditer(page_html):
+        try:
+            data = json.loads(html_module.unescape(match.group(1)))
+        except ValueError:
+            continue
+        if not isinstance(data, dict):
+            continue
+        detail = _text(data.get("detail"))
+        if not detail:
+            continue
+        for key in ("jobid", "_jobid", "mid"):
+            ident = _text(data.get(key))
+            if ident:
+                details.setdefault(ident, detail)
+    return details
+
+
+def _parse_task(
+    card: Mapping[str, object],
+    discussion_details: Mapping[str, str],
+) -> TaskPoint | None:
     raw_type = _text(card.get("type"))
     properties = _mapping(card.get("property"))
     job_id = _text(card.get("jobid"))
@@ -333,6 +360,11 @@ def _parse_task(card: Mapping[str, object]) -> TaskPoint | None:
             mid=mid,
             other_info=other_info,
             title=_text(properties.get("title")),
+            detail=(
+                _text(properties.get("detail"))
+                or discussion_details.get(job_id, "")
+                or discussion_details.get(mid, "")
+            ),
             enc=_text(card.get("enc")),
             aid=_text(card.get("aid")),
         )
@@ -364,6 +396,7 @@ def parse_task_card_page(html: str) -> TaskCardPage:
     completed = 0
     unresolved = 0
     attachment_count = 0
+    discussion_details = _discussion_details(html)
     for raw_card in raw_attachments:
         card = _mapping(raw_card)
         if not card:
@@ -381,7 +414,7 @@ def parse_task_card_page(html: str) -> TaskCardPage:
         if card.get("isPassed") is True:
             completed += 1
             continue
-        task = _parse_task(card)
+        task = _parse_task(card, discussion_details)
         if task is not None:
             tasks.append(task)
         elif card.get("job") is not None:
