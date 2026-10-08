@@ -153,7 +153,7 @@ def test_document_node_id_parser_handles_delimited_and_terminal_values() -> None
 
 
 def test_document_completion_uses_typed_protocol_and_tls_verification() -> None:
-    session = StubSession([text_response("accepted")])
+    session = StubSession([json_response({"status": True, "msg": "考核点已经完成"})])
     client = DocumentTaskClient(
         session=cast(requests.Session, session),
         timeout=(2.0, 9.0),
@@ -176,6 +176,15 @@ def test_document_completion_uses_typed_protocol_and_tls_verification() -> None:
     }
     assert kwargs["timeout"] == (2.0, 9.0)
     assert kwargs["verify"] is True
+
+
+def test_document_completion_rejects_explicit_failure_status() -> None:
+    session = StubSession([json_response({"status": False, "msg": "考核点未完成"})])
+    client = DocumentTaskClient(session=cast(requests.Session, session))
+
+    result = client.complete(course(), document_task())
+
+    assert result.accepted is False
 
 
 def test_reading_completion_covers_readv2_parameters_and_status() -> None:

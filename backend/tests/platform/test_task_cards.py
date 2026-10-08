@@ -152,7 +152,8 @@ def test_non_job_attachment_is_ignored_but_incomplete_job_is_retained() -> None:
 
 
 def test_jobid_only_document_card_is_parsed_as_task() -> None:
-    # 新版任务卡片不再输出 job 标记, 只有 jobid
+    # 新版卡片里课件/教案等普通附件也带 jobid, 但没有 job 标记——
+    # 它们只是可查看材料, 不是任务点 (平台对 pending 任务统一发 job:true).
     page = parse_task_card_page(
         """<script>mArg={"attachments":[{
         "begins":0,"ends":0,"type":"document","jobid":"1766028012513548",
@@ -165,13 +166,52 @@ def test_jobid_only_document_card_is_parsed_as_task() -> None:
             "pagenum":"22","type":".pptx","title":"课件.pptx"}
         }]};</script>"""
     )
-    assert page.attachment_count == 1
+    assert page.tasks == ()
+    assert page.attachment_count == 0
+    assert page.completed_attachment_count == 0
     assert page.unresolved_attachment_count == 0
-    task = cast(DocumentTaskPoint, page.tasks[0])
-    assert task.job_id == "1766028012513548"
-    assert task.object_id == "4171653dd2def09d357717a47f452954"
-    assert task.jtoken == "9391ea16a1a80e94c81c49f6434f580e"
-    assert task.other_info == "nodeId_1087358235-cpi_497744587"
+
+
+def test_job_true_discussion_card_is_the_pending_task() -> None:
+    # 真实课程数据: 一章五张分段卡 (课件/教案/案例/讨论/视频),
+    # 只有讨论卡带 job:true + property.isJob, 其余都是普通附件或已完成媒体.
+    page = parse_task_card_page(
+        """<script>mArg={"attachments":[
+        {"begins":0,"ends":0,"type":"document","jobid":"1766028012513548",
+            "property":{"module":"insertdoc","name":"课件.pptx","objectid":"abc"}},
+        {"begins":0,"ends":0,"jobid":"1765241048263797","job":true,"jobid":"1765241048263797",
+            "mid":"2774261486341765241048264",
+            "otherInfo":"nodeId_1087358235-cpi_497744587",
+            "property":{"module":"insertbbs","isJob":true,
+                "title":"数字技术对传统产业升级有何作用\uff1f","mid":"2774261486341765241048264"}},
+        {"type":"video","jobid":"1784562160588201","isPassed":true,
+            "mid":"9050588167591784562160462","objectId":"vid-obj",
+            "property":{"module":"insertvideo","name":"视频.mp4"}}
+        ]};</script>"""
+    )
+    assert page.attachment_count == 2
+    assert page.completed_attachment_count == 1
+    assert page.unresolved_attachment_count == 0
+    assert len(page.tasks) == 1
+    task = cast(DiscussionTaskPoint, page.tasks[0])
+    assert task.job_id == "1765241048263797"
+    assert task.mid == "2774261486341765241048264"
+    assert task.title == "数字技术对传统产业升级有何作用？"  # noqa: RUF001
+
+
+def test_completed_isJob_card_counts_as_finished_attachment() -> None:
+    # 讨论任务完成后平台撤掉 job 标记但保留 property.isJob——
+    # 它仍是任务附件, 只是已完成.
+    page = parse_task_card_page(
+        """<script>mArg={"attachments":[{
+        "begins":0,"ends":0,"jobid":"1766296524413677",
+        "mid":"6864150493591766296524415",
+        "property":{"module":"insertbbs","isJob":true,"title":"创意讨论"}
+        }]};</script>"""
+    )
+    assert page.tasks == ()
+    assert page.attachment_count == 1
+    assert page.completed_attachment_count == 1
 
 
 def test_insertbbs_discussion_cards_are_parsed_as_tasks() -> None:
@@ -190,9 +230,9 @@ def test_insertbbs_discussion_cards_are_parsed_as_tasks() -> None:
         "property":{"jobid":"1766296524413677","module":"insertbbs",
             "title":"Discussion A","isJob":true,"replytimes":"1"}
         },{
-        "jobid":"1766296864920609","mid":"16033776146381766296864921",
+        "job":true,"jobid":"1766296864920609","mid":"16033776146381766296864921",
         "otherInfo":"nodeId_1087365292-cpi_497744587",
-        "property":{"module":"inserttopic","title":"Discussion B"}
+        "property":{"module":"inserttopic","title":"Discussion B","isJob":true}
         },{
         "job":true,"jobid":"missing-topic","property":{"module":"insertbbs"}
         }]};</script>"""
@@ -227,17 +267,49 @@ def test_numeric_defaults_and_jobid_are_coerced_to_text() -> None:
 
 
 def test_client_probes_declared_cards_and_stops_after_empty_page() -> None:
-    session = StubSession([response(fixture("task_cards.html")), response("<html></html>")])
+    # ``job_count`` counts pending jobs, not card pages, so probing continues
+    # until two consecutive cards come back empty.
+    session = StubSession(
+        [
+            response(fixture("task_cards.html")),
+            response("<html></html>"),
+            response("<html></html>"),
+        ]
+    )
     client = ChapterTaskClient(session=cast(requests.Session, session))
 
     bundle = client.fetch(course(), chapter(job_count=1))
 
     assert len(bundle.tasks) == 5
     assert bundle.defaults is not None
-    assert len(session.calls) == 2
+    assert len(session.calls) == 3
     assert session.calls[0][2]["params"]["num"] == 0
     assert session.calls[1][2]["params"]["num"] == 1
+    assert session.calls[2][2]["params"]["num"] == 2
     assert all(call[2]["verify"] is True for call in session.calls)
+
+
+def test_client_scans_past_job_count_to_find_pending_cards() -> None:
+    # A chapter may report job_count=1 while the pending job lives on a later
+    # card page (e.g. the 讨论 section after 课件/教案/案例).
+    session = StubSession(
+        [
+            response("<script>mArg={\"attachments\":[{\"type\":\"document\",\"jobid\":\"d1\",\"property\":{\"module\":\"insertdoc\",\"objectid\":\"o\"}}]};</script>"),
+            response("<script>mArg={\"attachments\":[{\"type\":\"document\",\"jobid\":\"d2\",\"property\":{\"module\":\"insertdoc\",\"objectid\":\"o\"}}]};</script>"),
+            response("<script>mArg={\"attachments\":[{\"job\":true,\"jobid\":\"bbs-1\",\"mid\":\"m-1\",\"property\":{\"module\":\"insertbbs\",\"isJob\":true,\"title\":\"讨论\"}}]};</script>"),
+            response("<script>mArg={\"attachments\":[{\"type\":\"video\",\"jobid\":\"v1\",\"isPassed\":true,\"objectId\":\"o\",\"mid\":\"m\",\"property\":{\"module\":\"insertvideo\"}}]};</script>"),
+            response("<html></html>"),
+            response("<html></html>"),
+        ]
+    )
+    client = ChapterTaskClient(session=cast(requests.Session, session))
+
+    bundle = client.fetch(course(), chapter(job_count=1))
+
+    assert len(session.calls) == 6
+    assert len(bundle.tasks) == 1
+    assert isinstance(bundle.tasks[0], DiscussionTaskPoint)
+    assert bundle.completed_attachment_count == 1
 
 
 def test_client_detects_login_redirect_without_exposing_page() -> None:

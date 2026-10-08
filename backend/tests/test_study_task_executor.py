@@ -114,12 +114,26 @@ class StubChapterClient:
     bundles: Mapping[str, ChapterTaskBundle]
     error: Exception | None = None
     calls: list[str] = field(default_factory=list)
+    verify_bundles: Mapping[str, ChapterTaskBundle] | None = None
+    _fetch_counts: dict[str, int] = field(default_factory=dict)
 
     def fetch(self, _course: Course, chapter: Chapter) -> ChapterTaskBundle:
         self.calls.append(chapter.chapter_id)
         if self.error is not None:
             raise self.error
-        return self.bundles[chapter.chapter_id]
+        seen = self._fetch_counts.get(chapter.chapter_id, 0)
+        self._fetch_counts[chapter.chapter_id] = seen + 1
+        if not seen:
+            return self.bundles[chapter.chapter_id]
+        if self.verify_bundles is not None:
+            return self.verify_bundles[chapter.chapter_id]
+        # The post-execution verification refetches the same cards; once every
+        # job marker dropped the page reports no pending tasks left.
+        bundle = self.bundles[chapter.chapter_id]
+        return ChapterTaskBundle(
+            (), bundle.defaults, False,
+            bundle.attachment_count, bundle.attachment_count,
+        )
 
 
 @dataclass(slots=True)
@@ -485,7 +499,7 @@ def test_executes_supported_points_in_one_authenticated_session(tmp_path: Path) 
     assert rows["points"].status == ChapterStatus.SUCCEEDED.value
     assert rows["empty"].status == ChapterStatus.SUCCEEDED.value
     assert all(row.attempts == 1 for row in rows.values())
-    assert harness.chapter_client.calls == ["points", "empty"]
+    assert harness.chapter_client.calls == ["points", "points", "empty"]
     assert harness.document_client.calls == ["doc-job"]
     assert harness.reading_client.calls == [("read-job", "knowledge-default")]
     assert harness.empty_client.calls == ["empty"]
@@ -501,6 +515,31 @@ def test_executes_supported_points_in_one_authenticated_session(tmp_path: Path) 
     assert "chapter.document.completed" in kinds
     assert "chapter.reading.completed" in kinds
     assert "chapter.empty_page.completed" in kinds
+
+
+def test_pending_jobs_still_present_after_execution_marks_unsubmitted(tmp_path: Path) -> None:
+    # The platform sometimes answers a completion request with a generic
+    # "already finished" while the job marker stays pending. After the task
+    # points run, the cards are refetched and any remaining pending job keeps
+    # the chapter out of the succeeded column.
+    database = make_task_database(tmp_path, [("doc", ChapterStatus.PENDING)])
+    document = DocumentTaskPoint("doc-job", "object-2", "nodeId_doc", "jtoken")
+    pending_bundle = bundle(document)
+    harness = ExecutorHarness(
+        StubChapterClient({"doc": pending_bundle}, verify_bundles={"doc": pending_bundle})
+    )
+
+    status, _account = run_executor(
+        database,
+        CourseOutline((chapter("doc", jobs=1),)),
+        harness,
+    )
+
+    assert status is TaskStatus.NEEDS_ATTENTION
+    rows = load_chapters(database.engine, database.task_id)
+    assert rows["doc"].status == ChapterStatus.UNSUBMITTED.value
+    assert rows["doc"].last_error == "completion_unverified"
+    assert harness.chapter_client.calls == ["doc", "doc"]
 
 
 def test_only_pending_and_running_chapters_are_retried(tmp_path: Path) -> None:

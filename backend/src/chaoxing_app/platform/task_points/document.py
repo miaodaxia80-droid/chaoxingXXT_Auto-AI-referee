@@ -68,8 +68,19 @@ class DocumentTaskClient(TaskPointHTTPClient):
                 "_dc": self._timestamp_ms(),
             },
         )
+        # The platform answers every request - including ones for jobs that do
+        # not exist or are not tracked - with ``{"status": ..., "msg": ...}``.
+        # Only an explicit ``status: true`` may count as platform acceptance.
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise PlatformParseError(
+                "document task completion", "response is not valid JSON"
+            ) from exc
+        if not isinstance(payload, dict):
+            raise PlatformParseError("document task completion", "response must be an object")
         return DocumentCompletionResult(
-            accepted=True,
+            accepted=payload.get("status") is True,
             status_code=response.status_code,
             knowledge_id=knowledge_id,
         )

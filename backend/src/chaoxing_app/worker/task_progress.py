@@ -34,6 +34,7 @@ _SAFE_REASONS = frozenset(
         "quiz_requires_answers",
         "unsupported_task_point",
         "unresolved_task_points",
+        "completion_unverified",
         "discussion_auto_reply_disabled",
         "discussion_reply_pending_review",
         "platform_authentication_failed",

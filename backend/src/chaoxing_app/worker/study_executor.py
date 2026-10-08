@@ -596,6 +596,15 @@ class StudyTaskExecutor:
                     progress=progress,
                     answer_binding=None,
                 )
+            if attention is None and (bundle.tasks or bundle.attachment_count):
+                attention, attention_reason = self._verify_completion(
+                    course=course,
+                    chapter=chapter,
+                    account=account,
+                    control=control,
+                    progress=progress,
+                    chapter_client=chapter_client,
+                )
             progress.finish_chapter(
                 chapter.chapter_id,
                 status=attention or ChapterStatus.SUCCEEDED,
@@ -621,6 +630,39 @@ class StudyTaskExecutor:
             )
             if rethrow_unexpected:
                 raise
+
+    def _verify_completion(
+        self,
+        *,
+        course: Course,
+        chapter: Chapter,
+        account: AccountStudySession,
+        control: WorkerControl,
+        progress: ClaimedTaskProgress,
+        chapter_client: ChapterTaskPort,
+    ) -> tuple[ChapterStatus | None, str | None]:
+        # Request success does not prove the platform marked the job done:
+        # some endpoints answer a generic "already finished" for untracked
+        # jobs. Refetch the cards and only accept success once every pending
+        # job marker is actually gone.
+        try:
+            fresh = self._authenticated(
+                account,
+                lambda _client: chapter_client.fetch(course, chapter),
+                control,
+            )
+        except PlatformError:
+            return ChapterStatus.UNSUBMITTED, "completion_unverified"
+        remaining = len(fresh.tasks) + fresh.unresolved_attachment_count
+        if not remaining:
+            return None, None
+        progress.record_event(
+            chapter.chapter_id,
+            kind="chapter.completion_unverified",
+            level="warning",
+            payload={"task_type": "verify", "remaining_jobs": remaining},
+        )
+        return ChapterStatus.UNSUBMITTED, "completion_unverified"
 
     def _finish_without_pending_points(
         self,

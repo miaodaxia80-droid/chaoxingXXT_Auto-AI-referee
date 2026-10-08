@@ -21,6 +21,7 @@ from chaoxing_app.platform.task_points.video import MediaKind, MediaTask
 
 _MARG_OBJECT_ASSIGNMENT = re.compile(r"\bmArg\s*=\s*(?=\{)")
 _CARDS_URL = "https://mooc1.chaoxing.com/mooc-ans/knowledge/cards"
+_MAX_CARD_PAGES = 12
 _CARDS_VERSION = "2025-0424-1038-3"
 
 
@@ -119,10 +120,17 @@ class TaskCardPage:
     attachment_count: int
     completed_attachment_count: int
     unresolved_attachment_count: int = 0
+    material_attachment_count: int = 0
 
     @property
     def is_empty(self) -> bool:
-        return not self.tasks and self.defaults is None and not self.not_open
+        return (
+            not self.tasks
+            and self.defaults is None
+            and not self.not_open
+            and self.attachment_count == 0
+            and self.material_attachment_count == 0
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -304,7 +312,6 @@ def _parse_task(
             aid=_text(card.get("aid")),
         )
 
-    # 新版任务卡片不再输出 job 标记, 改用 jobid 是否存在判断任务点
     if card.get("job") is None and not job_id:
         return None
 
@@ -396,6 +403,7 @@ def parse_task_card_page(html: str) -> TaskCardPage:
     completed = 0
     unresolved = 0
     attachment_count = 0
+    material_count = 0
     discussion_details = _discussion_details(html)
     for raw_card in raw_attachments:
         card = _mapping(raw_card)
@@ -403,21 +411,36 @@ def parse_task_card_page(html: str) -> TaskCardPage:
             raise PlatformParseError("task cards", "attachment must be an object")
         raw_type = _text(card.get("type"))
         properties = _mapping(card.get("property"))
-        is_task = (
-            card.get("job") is not None
-            or (raw_type == "read" and properties.get("read") is not True)
-            or (raw_type != "read" and bool(_text(card.get("jobid"))))
-        )
-        if not is_task:
+        job = card.get("job")
+        if card.get("isPassed") is True:
+            # Media pass marker outranks every other flag.
+            pending = False
+        elif job is not None:
+            # ``job`` is the authoritative pending marker: truthy means the
+            # platform still tracks this attachment as an unfinished job.
+            pending = bool(job)
+        elif properties.get("isJob"):
+            # Newer cards drop ``job`` once the job is done while keeping
+            # ``property.isJob`` as the permanent "this is a job" marker.
+            pending = False
+        elif raw_type == "read":
+            if properties.get("read") is True:
+                material_count += 1
+                continue
+            pending = True
+        else:
+            # Plain course material (课件/教案 attachments carry ``jobid`` but
+            # no job marker) - not a task point at all.
+            material_count += 1
             continue
         attachment_count += 1
-        if card.get("isPassed") is True:
+        if not pending:
             completed += 1
             continue
         task = _parse_task(card, discussion_details)
         if task is not None:
             tasks.append(task)
-        elif card.get("job") is not None:
+        else:
             unresolved += 1
     return TaskCardPage(
         tasks=tuple(tasks),
@@ -426,6 +449,7 @@ def parse_task_card_page(html: str) -> TaskCardPage:
         attachment_count=attachment_count,
         completed_attachment_count=completed,
         unresolved_attachment_count=unresolved,
+        material_attachment_count=material_count,
     )
 
 
@@ -446,8 +470,9 @@ class ChapterTaskClient:
         self._tls_verify = tls_verify
 
     def fetch(self, course: Course, chapter: Chapter) -> ChapterTaskBundle:
-        declared_count = max(1, min(chapter.job_count or 1, 7))
-        probe_count = min(7, declared_count + 1)
+        # ``chapter.job_count`` only counts pending jobs and cannot bound the
+        # number of card pages: one chapter section (课件/教案/讨论/视频…) is
+        # rendered per card, so keep scanning until the cards actually run out.
         tasks: list[TaskPoint] = []
         defaults: JobDefaults | None = None
         attachment_count = 0
@@ -455,13 +480,13 @@ class ChapterTaskClient:
         unresolved_count = 0
         consecutive_empty = 0
 
-        for card_number in range(probe_count):
+        for card_number in range(_MAX_CARD_PAGES):
             page = self._fetch_page(course, chapter, card_number)
             if page.not_open:
                 return ChapterTaskBundle((), page.defaults, True, 0, 0)
             if page.is_empty:
                 consecutive_empty += 1
-                if card_number >= declared_count - 1 or consecutive_empty >= 2:
+                if consecutive_empty >= 2:
                     break
                 continue
             consecutive_empty = 0
