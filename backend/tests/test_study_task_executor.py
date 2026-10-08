@@ -72,11 +72,16 @@ class StubCourseClient:
     outline: CourseOutline
     error: Exception | None = None
     courses: list[Course] = field(default_factory=list)
+    post_outline: CourseOutline | None = None
+    _outline_calls: int = 0
 
     def get_course_outline(self, course: Course) -> CourseOutline:
         self.courses.append(course)
+        self._outline_calls += 1
         if self.error is not None:
             raise self.error
+        if self._outline_calls > 1 and self.post_outline is not None:
+            return self.post_outline
         return self.outline
 
 
@@ -457,8 +462,11 @@ def run_executor(
     harness: ExecutorHarness,
     *,
     course_error: Exception | None = None,
+    post_outline: CourseOutline | None = None,
 ) -> tuple[TaskStatus, StubAccountSession]:
-    account = StubAccountSession(StubCourseClient(outline, course_error))
+    account = StubAccountSession(
+        StubCourseClient(outline, course_error, post_outline=post_outline)
+    )
     runtime = StubAccountRuntime(account)
     executor = harness.executor(engine=database.engine, runtime=runtime)
     status = executor.execute(
@@ -1037,6 +1045,8 @@ def test_unresolved_incomplete_attachments_need_attention(tmp_path: Path) -> Non
 
 
 def test_missing_card_payload_with_declared_job_cannot_be_marked_empty(tmp_path: Path) -> None:
+    # 空卡片页 + 声明任务点: 先打访问上报, 再按大纲状态复核——
+    # 平台仍未确认时不能算完成.
     database = make_task_database(tmp_path, [("one", ChapterStatus.PENDING)])
     harness = ExecutorHarness(
         StubChapterClient({"one": ChapterTaskBundle((), None, False, 0, 0)})
@@ -1052,7 +1062,28 @@ def test_missing_card_payload_with_declared_job_cannot_be_marked_empty(tmp_path:
     row = load_chapters(database.engine, database.task_id)["one"]
     assert row.status == ChapterStatus.FAILED.value
     assert row.last_error == "unresolved_task_points"
-    assert harness.empty_client.calls == []
+    assert harness.empty_client.calls == ["one"]
+
+
+def test_empty_card_page_visit_ping_completes_when_outline_confirms(tmp_path: Path) -> None:
+    # 有的章节任务不在卡片里 (访问/阅读型隐藏任务点) —— 访问上报后大纲
+    # 变为已完成才算真正完成.
+    database = make_task_database(tmp_path, [("one", ChapterStatus.PENDING)])
+    harness = ExecutorHarness(
+        StubChapterClient({"one": ChapterTaskBundle((), None, False, 0, 0)})
+    )
+
+    status, _account = run_executor(
+        database,
+        CourseOutline((chapter("one", jobs=1),)),
+        harness,
+        post_outline=CourseOutline((chapter("one", jobs=1, completed=True),)),
+    )
+
+    assert status is TaskStatus.SUCCEEDED
+    row = load_chapters(database.engine, database.task_id)["one"]
+    assert row.status == ChapterStatus.SUCCEEDED.value
+    assert harness.empty_client.calls == ["one"]
 
 
 def test_mixed_known_and_unresolved_attachments_cannot_succeed(tmp_path: Path) -> None:

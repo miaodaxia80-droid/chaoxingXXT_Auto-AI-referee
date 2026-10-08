@@ -253,6 +253,88 @@ def test_insertbbs_discussion_cards_are_parsed_as_tasks() -> None:
     assert unsupported.reason == "missing discussion topic id"
 
 
+def test_legacy_video_task_uses_property_underscore_jobid() -> None:
+    # 老格式卡片: 待完成任务没有 job/isPassed/jobid 字段, 任务 id 只在
+    # property._jobid 里, 渲染 HTML 给待办 iframe 打 taskIframe class.
+    page = parse_task_card_page(
+        """<iframe class="taskIframe ans-module ans-insertvideo-module"
+        module="insertvideo" data="{&quot;objectid&quot;:&quot;5507e032e4b0b35562941ef4&quot;,
+        &quot;mid&quot;:&quot;5006659210271426580049093&quot;,&quot;_jobid&quot;:1426580103680}"></iframe>
+        <iframe class="taskIframe ans-module ans-ballchart-module" module="ballchart"
+        data="{&quot;keyword&quot;:&quot;投票&quot;,&quot;mid&quot;:&quot;3511873292621426209853083&quot;}"></iframe>
+        <script>mArg={"attachments":[{
+        "type":"video","objectId":"5507e032e4b0b35562941ef4",
+        "mid":"5006659210271426580049093",
+        "otherInfo":"nodeId_707384302-cpi_497744499-rt_d&courseId=232576627",
+        "attDuration":592,"aid":1391816067,
+        "property":{"module":"insertvideo","name":"1.1.mov",
+            "objectid":"5507e032e4b0b35562941ef4","_jobid":1426580103680}
+        },{
+        "type":"","property":{"module":"insertimage","name":"图1.jpg",
+            "objectid":"54f66a32e4b06685dedfcf31","_jobid":"1776924208952598000"}
+        },{
+        "type":"","property":{"module":"insertimage","name":"图2.jpg",
+            "objectid":"5500e139e4b06685dee3904d","_jobid":"1776924208952260001"}
+        }]};</script>"""
+    )
+
+    assert [type(task) for task in page.tasks] == [VideoTaskPoint]
+    task = cast(VideoTaskPoint, page.tasks[0])
+    assert task.job_id == "1426580103680"
+    assert task.media.object_id == "5507e032e4b0b35562941ef4"
+    assert task.media.attention_duration == "592"
+    assert task.kind is MediaKind.VIDEO
+    assert page.attachment_count == 1
+    assert page.material_attachment_count == 2
+    # 投票挂件带 taskIframe 但没有 jobid, 不算任务点.
+    assert page.unresolved_attachment_count == 0
+
+
+def test_legacy_completed_job_counts_as_finished_attachment() -> None:
+    # 老格式完成态: 附件重新带上顶层 jobid/isPassed (property._jobid 保留).
+    page = parse_task_card_page(
+        """<iframe class="ans-module ans-attach-online ans-insertvideo-module"
+        module="insertvideo" data="{&quot;objectid&quot;:&quot;o1&quot;,
+        &quot;mid&quot;:&quot;m1&quot;,&quot;_jobid&quot;:1434615938324,
+        &quot;jobid&quot;:1434615938324}"></iframe>
+        <script>mArg={"attachments":[{
+        "type":"video","jobid":"1434615938324","isPassed":true,
+        "objectId":"o1","mid":"m1","playTime":363000,
+        "property":{"module":"insertvideo","jobid":1434615938324,
+            "_jobid":1434615938324,"objectid":"o1"}
+        },{
+        "type":"","property":{"module":"insertimage",
+            "_jobid":"1776924208952598000"}
+        }]};</script>"""
+    )
+
+    assert page.tasks == ()
+    assert page.attachment_count == 1
+    assert page.completed_attachment_count == 1
+    assert page.material_attachment_count == 1
+
+
+def test_legacy_material_document_stays_material() -> None:
+    # 老格式里材料图片/非任务附件也带 _jobid —— 但它们的 iframe 没有
+    # taskIframe class, 不能被误认成任务点.
+    page = parse_task_card_page(
+        """<iframe class="taskIframe ans-module ans-insertvideo-module"
+        module="insertvideo"
+        data="{&quot;_jobid&quot;:111,&quot;mid&quot;:&quot;vm&quot;}"></iframe>
+        <script>mArg={"attachments":[{
+        "type":"video","objectId":"o","mid":"vm",
+        "property":{"module":"insertvideo","_jobid":111}
+        },{
+        "type":"document","otherInfo":"nodeId_1",
+        "property":{"module":"insertdoc","objectid":"doc-obj",
+            "_jobid":"1776924208952598000"}
+        }]};</script>"""
+    )
+
+    assert [type(task) for task in page.tasks] == [VideoTaskPoint]
+    assert page.material_types == ("document/insertdoc",)
+
+
 def test_numeric_defaults_and_jobid_are_coerced_to_text() -> None:
     page = parse_task_card_page(
         """<script>mArg={

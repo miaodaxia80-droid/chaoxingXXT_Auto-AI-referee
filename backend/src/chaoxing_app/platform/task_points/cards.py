@@ -101,6 +101,23 @@ class UnsupportedTaskPoint:
 
 _DISCUSSION_MODULES = frozenset({"insertbbs", "inserttopic"})
 _DISCUSSION_IFRAME = re.compile(r'ans-insertbbs-module[^>]*\bdata="([^"]+)"')
+# Legacy card pages carry no ``job``/``isPassed``/``isJob`` flags in ``mArg`` at
+# all; the platform marks an unfinished job by rendering its iframe with the
+# ``taskIframe`` class (completed jobs and plain materials lose it).
+_TASK_IFRAME_TAG = re.compile(r"<iframe\b[^>]*\btaskIframe\b[^>]*>")
+_IFRAME_DATA = re.compile(r'\bdata="([^"]*)"')
+_TASK_MODULES = frozenset(
+    {
+        "insertvideo",
+        "insertaudio",
+        "insertdoc",
+        "insertread",
+        "insertwork",
+        "insertbbs",
+        "inserttopic",
+    }
+)
+_TASK_TYPES = frozenset({"video", "audio", "document", "workid"})
 
 type TaskPoint = (
     VideoTaskPoint
@@ -239,9 +256,11 @@ def _parse_defaults(value: object) -> JobDefaults | None:
     )
 
 
-def _unsupported(card: Mapping[str, object], raw_type: str, reason: str) -> UnsupportedTaskPoint:
+def _unsupported(
+    card: Mapping[str, object], raw_type: str, reason: str, job_id: str = ""
+) -> UnsupportedTaskPoint:
     return UnsupportedTaskPoint(
-        job_id=_text(card.get("jobid")),
+        job_id=job_id or _text(card.get("jobid")),
         raw_type=raw_type or "unknown",
         reason=reason,
     )
@@ -299,20 +318,73 @@ def _card_label(card: Mapping[str, object]) -> str:
     return f"{raw_type}/{module}"
 
 
+def _pending_job_ids(page_html: str) -> tuple[set[str], int]:
+    # ``taskIframe`` marks an unfinished job element. Interactive widgets like
+    # 投票 (ballchart) render the same class but carry no job id, so only
+    # iframes whose ``data`` exposes jobid/_jobid count as pending jobs.
+    ids: set[str] = set()
+    iframe_count = 0
+    for tag in _TASK_IFRAME_TAG.finditer(page_html):
+        iframe_count += 1
+        data_match = _IFRAME_DATA.search(tag.group(0))
+        if data_match is None:
+            continue
+        try:
+            data = json.loads(html_module.unescape(data_match.group(1)))
+        except ValueError:
+            continue
+        if not isinstance(data, dict):
+            continue
+        job_ids = {_text(data.get(key)) for key in ("jobid", "_jobid")}
+        job_ids.discard("")
+        if not job_ids:
+            continue
+        ids.update(job_ids)
+        for key in ("mid", "objectid", "objectId"):
+            value = _text(data.get(key))
+            if value:
+                ids.add(value)
+    return ids, iframe_count
+
+
+def _attachment_ids(card: Mapping[str, object], properties: Mapping[str, object]) -> set[str]:
+    ids = {
+        _text(card.get("jobid")),
+        _text(card.get("mid")),
+        _text(card.get("objectId")),
+        _text(properties.get("jobid")),
+        _text(properties.get("_jobid")),
+        _text(properties.get("mid")),
+        _text(properties.get("objectid")),
+    }
+    ids.discard("")
+    return ids
+
+
+def _is_task_module(raw_type: str, properties: Mapping[str, object]) -> bool:
+    return raw_type in _TASK_TYPES or _text(properties.get("module")) in _TASK_MODULES
+
+
 def _parse_task(
     card: Mapping[str, object],
     discussion_details: Mapping[str, str],
 ) -> TaskPoint | None:
     raw_type = _text(card.get("type"))
     properties = _mapping(card.get("property"))
-    job_id = _text(card.get("jobid"))
+    # Legacy cards expose the job id only as ``property._jobid``; newer cards
+    # use top-level ``jobid`` (and often mirror it into ``property.jobid``).
+    job_id = (
+        _text(card.get("jobid"))
+        or _text(properties.get("jobid"))
+        or _text(properties.get("_jobid"))
+    )
     other_info = _clean_other_info(card.get("otherInfo"))
 
     if card.get("job") is None and raw_type == "read":
         if properties.get("read") is True:
             return None
         if not job_id:
-            return _unsupported(card, raw_type, "missing job id")
+            return _unsupported(card, raw_type, "missing job id", job_id)
         return ReadTaskPoint(
             job_id=job_id,
             item_id=_text(properties.get("id")),
@@ -328,12 +400,12 @@ def _parse_task(
         return None
 
     if not job_id:
-        return _unsupported(card, raw_type, "missing job id")
-    if raw_type == "video":
+        return _unsupported(card, raw_type, "missing job id", job_id)
+    if raw_type in {"video", "audio"}:
         object_id = _text(card.get("objectId"))
         mid = _text(card.get("mid"))
         if not object_id or not mid:
-            return _unsupported(card, raw_type, "media is not fully transcoded")
+            return _unsupported(card, raw_type, "media is not fully transcoded", job_id)
         resolved_kind = _media_kind(card, properties)
         return VideoTaskPoint(
             media=MediaTask(
@@ -373,7 +445,7 @@ def _parse_task(
     if raw_type in _DISCUSSION_MODULES or _text(properties.get("module")) in _DISCUSSION_MODULES:
         mid = _text(card.get("mid")) or _text(properties.get("mid"))
         if not mid:
-            return _unsupported(card, raw_type, "missing discussion topic id")
+            return _unsupported(card, raw_type, "missing discussion topic id", job_id)
         return DiscussionTaskPoint(
             job_id=job_id,
             mid=mid,
@@ -387,7 +459,7 @@ def _parse_task(
             enc=_text(card.get("enc")),
             aid=_text(card.get("aid")),
         )
-    return _unsupported(card, raw_type, "unsupported task type")
+    return _unsupported(card, raw_type, "unsupported task type", job_id)
 
 
 def parse_task_card_page(html: str) -> TaskCardPage:
@@ -419,6 +491,7 @@ def parse_task_card_page(html: str) -> TaskCardPage:
     unresolved_types: list[str] = []
     material_types: list[str] = []
     discussion_details = _discussion_details(html)
+    pending_ids, task_iframe_count = _pending_job_ids(html)
     for raw_card in raw_attachments:
         card = _mapping(raw_card)
         if not card:
@@ -445,11 +518,34 @@ def parse_task_card_page(html: str) -> TaskCardPage:
                 continue
             pending = True
         else:
-            # Plain course material (课件/教案 attachments carry ``jobid`` but
-            # no job marker) - not a task point at all.
-            material_count += 1
-            material_types.append(label)
-            continue
+            ids = _attachment_ids(card, properties)
+            if ids & pending_ids:
+                # The rendered page still marks this attachment as an
+                # unfinished job even though ``mArg`` carries no flag.
+                pending = True
+            elif not _text(properties.get("_jobid")) or not _is_task_module(
+                raw_type, properties
+            ):
+                # Plain course material (课件/教案 attachments carry ``jobid``
+                # but no job marker) - not a task point at all.
+                material_count += 1
+                material_types.append(label)
+                continue
+            elif _text(card.get("jobid")) or _text(properties.get("jobid")):
+                # Legacy cards expose a completed job's id at top level while
+                # pending jobs only keep ``property._jobid``.
+                pending = False
+            elif task_iframe_count:
+                # The page renders pending job iframes and this attachment is
+                # not one of them, so it is material rather than a job.
+                material_count += 1
+                material_types.append(label)
+                continue
+            else:
+                # No pending markers were rendered at all; treat a taskable
+                # attachment without completion fields as pending and let the
+                # completion check confirm it.
+                pending = True
         attachment_count += 1
         if not pending:
             completed += 1
