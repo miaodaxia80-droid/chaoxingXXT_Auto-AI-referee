@@ -848,6 +848,7 @@ def test_provider_headers_reject_invalid_names_values_and_foreign_providers() ->
                 "x-a: b",
                 {"bad name": "v"},
                 {"x-inject": "v\r\nforged: yes"},
+                {"X-Api-Key": "header-secret-should-not-be-stored"},
                 {str(index): "v" for index in range(17)},
             ):
                 rejected = client.patch(

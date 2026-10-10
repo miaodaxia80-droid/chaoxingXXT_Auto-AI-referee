@@ -103,9 +103,32 @@ _PROVIDER_SECRET_FIELD: dict[AnswerProviderKind, str | None] = {
 _HEADER_NAME = re.compile(r"\A[!#$%&'*+\-.^_`|~0-9A-Za-z]+\Z")
 _HEADER_LIMIT = 16
 _HEADER_VALUE_LIMIT = 2_048
+_SENSITIVE_HEADER_PARTS = (
+    "authorization",
+    "api-key",
+    "apikey",
+    "token",
+    "secret",
+    "password",
+    "credential",
+)
 
 
-def _normalize_provider_headers(value: object) -> dict[str, str]:
+def is_sensitive_provider_header(name: str) -> bool:
+    """Return whether a custom header should use a dedicated secret field."""
+
+    normalized = name.strip().casefold().replace("_", "-")
+    return any(part in normalized for part in _SENSITIVE_HEADER_PARTS) or normalized in {
+        "cookie",
+        "set-cookie",
+    }
+
+
+def _normalize_provider_headers(
+    value: object,
+    *,
+    reject_sensitive: bool = False,
+) -> dict[str, str]:
     """Validate an optional map of extra request headers for HTTP providers."""
 
     if value is None:
@@ -125,8 +148,27 @@ def _normalize_provider_headers(value: object) -> dict[str, str]:
             or len(header_value.strip()) > _HEADER_VALUE_LIMIT
         ):
             raise IntegrationConfigurationError("answer provider headers are invalid")
-        normalized[name.strip()] = header_value.strip()
+        normalized_name = name.strip()
+        if reject_sensitive and is_sensitive_provider_header(normalized_name):
+            raise IntegrationConfigurationError(
+                "sensitive answer provider headers must use the dedicated credential field"
+            )
+        normalized[normalized_name] = header_value.strip()
     return normalized
+
+
+def public_provider_config(config: dict[str, object]) -> dict[str, object]:
+    """Remove legacy sensitive custom headers before returning settings to clients."""
+
+    public = deepcopy(config)
+    headers = public.get("headers")
+    if isinstance(headers, dict):
+        public["headers"] = {
+            name: value
+            for name, value in headers.items()
+            if isinstance(name, str) and not is_sensitive_provider_header(name)
+        }
+    return public
 
 
 def _with_opencode_headers(
@@ -596,7 +638,7 @@ class IntegrationSettingRepository:
                     raise IntegrationConfigurationError("answer provider switches must be boolean")
                 selected[key] = value
             elif key == "headers":
-                selected[key] = _normalize_provider_headers(value)
+                selected[key] = _normalize_provider_headers(value, reject_sensitive=True)
             elif not isinstance(value, str):
                 raise IntegrationConfigurationError("answer provider text fields must be strings")
             else:
