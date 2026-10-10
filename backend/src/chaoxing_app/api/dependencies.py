@@ -48,6 +48,26 @@ def get_wechat_client(request: Request) -> WeChatClient:
     return cast(WeChatClient, request.app.state.wechat_client)
 
 
+def _requires_immediate_sqlite_write(request: Request) -> bool:
+    if request.method not in {"POST", "PUT", "PATCH", "DELETE"}:
+        return False
+    api_prefix = str(getattr(request.app.state.settings, "api_prefix", "/api/v1")).rstrip("/")
+    path = request.url.path.rstrip("/")
+    tasks_prefix = f"{api_prefix}/tasks"
+    if path == tasks_prefix or path.startswith(f"{tasks_prefix}/"):
+        return True
+    cards_prefix = f"{api_prefix}/cards"
+    if path == cards_prefix or path.startswith(f"{cards_prefix}/"):
+        return True
+    accounts_prefix = f"{api_prefix}/accounts"
+    if path in {accounts_prefix, f"{accounts_prefix}/import"}:
+        return True
+    account_tail = path.removeprefix(f"{accounts_prefix}/")
+    # Account course discovery/chapters call the platform and must not hold
+    # the SQLite writer lock while waiting on an external service.
+    return account_tail.isdecimal()
+
+
 def get_db(
     request: Request,
     factory: sessionmaker[Session] = Depends(get_session_factory),
@@ -59,10 +79,10 @@ def get_db(
         # savepoint makes it visible to workers while the batch is still writing.
         # Reserve the writer before authentication reads to also avoid a WAL
         # read-snapshot -> write upgrade racing the worker's progress updates.
-        task_write = request.method in {"POST", "PUT", "PATCH", "DELETE"} and (
-            request.url.path == "/api/v1/tasks" or request.url.path.startswith("/api/v1/tasks/")
-        )
-        if task_write and session.get_bind().dialect.name == "sqlite":
+        if (
+            _requires_immediate_sqlite_write(request)
+            and session.get_bind().dialect.name == "sqlite"
+        ):
             session.connection().exec_driver_sql("BEGIN IMMEDIATE")
         yield session
         session.commit()

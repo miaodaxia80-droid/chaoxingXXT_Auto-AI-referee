@@ -32,6 +32,7 @@ from chaoxing_app.infrastructure.db.integrations import (
     IntegrationRevisionConflict,
     IntegrationSettingRepository,
     NotificationIntegrationView,
+    public_provider_config,
 )
 from chaoxing_app.infrastructure.notification_dispatcher import (
     NotificationSenderBuilder,
@@ -136,7 +137,7 @@ def _answer_response(view: AnswerIntegrationView) -> AnswerIntegrationResponse:
         submit_mode=view.submit_mode,
         threshold=view.threshold,
         revision=view.revision,
-        config=AnswerProviderPublicConfigResponse.model_validate(view.config),
+        config=AnswerProviderPublicConfigResponse.model_validate(public_provider_config(view.config)),
         profile=AnswerProfileResponse.model_validate(view.profile),
         has_tokens=view.has_tokens,
         has_token=view.has_token,
