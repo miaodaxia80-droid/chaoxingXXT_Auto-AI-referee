@@ -542,10 +542,12 @@ def parse_task_card_page(html: str) -> TaskCardPage:
                 material_types.append(label)
                 continue
             else:
-                # No pending markers were rendered at all; treat a taskable
-                # attachment without completion fields as pending and let the
-                # completion check confirm it.
-                pending = True
+                # _jobid is also an authoring identifier on plain documents.
+                # It is not proof of an unfinished job without a pending flag
+                # or taskIframe marker, even on a single-attachment page.
+                material_count += 1
+                material_types.append(label)
+                continue
         attachment_count += 1
         if not pending:
             completed += 1

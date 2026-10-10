@@ -111,8 +111,16 @@ def parse_chapter_list(html: str) -> CourseOutline:
 
         job_count_element = element.select_one("input.knowledgeJobCount")
         job_count = 1
+        if job_count_element is None:
+            # Plain materials render a 0 badge rather than a hidden pending
+            # count. Keep the conservative fallback only for unknown layouts.
+            job_count_element = element.select_one("span.catalog_points_yi")
         if job_count_element is not None:
-            raw_job_count = _attribute(job_count_element, "value", resource)
+            raw_job_count = (
+                _attribute(job_count_element, "value", resource)
+                if job_count_element.name == "input"
+                else job_count_element.get_text(strip=True)
+            )
             try:
                 job_count = int(raw_job_count)
             except ValueError as exc:

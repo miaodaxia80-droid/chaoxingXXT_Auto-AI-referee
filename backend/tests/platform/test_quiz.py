@@ -7,7 +7,7 @@ from typing import Any, cast
 import pytest
 import requests
 
-from chaoxing_app.platform.errors import PlatformParseError
+from chaoxing_app.platform.errors import AnswerProviderHTTPError, PlatformParseError
 from chaoxing_app.platform.models import Course
 from chaoxing_app.platform.task_points.cards import JobDefaults, QuizTaskPoint
 from chaoxing_app.platform.task_points.quiz import (
@@ -89,6 +89,31 @@ class FixtureProvider:
     def answer(self, question: QuizQuestion, *, course_context: str = "") -> str | None:
         self.contexts.append(course_context)
         return self.answers[question.question_id]
+
+
+def test_provider_configuration_rejection_stops_quiz_requests_without_submission() -> None:
+    class RejectedProvider:
+        calls = 0
+
+        def answer(self, question: QuizQuestion, *, course_context: str = "") -> None:
+            self.calls += 1
+            raise AnswerProviderHTTPError(400, session_required=True)
+
+    session = StubSession([response(QUIZ_HTML)])
+    provider = RejectedProvider()
+    result = QuizTaskClient(session=cast(requests.Session, session)).complete(
+        course(),
+        quiz_task(),
+        provider=provider,
+        defaults=JobDefaults(knowledge_id="chapter-100"),
+    )
+    assert result.status is QuizSubmissionStatus.UNSUBMITTED
+    assert result.reason == "provider_error"
+    assert result.provider_error_count == 1
+    assert result.provider_failure_reason == "provider_session_required"
+    assert result.provider_status_code == 400
+    assert provider.calls == 1
+    assert len(session.calls) == 1  # Fetch only: never save or submit invented answers.
 
 
 def course() -> Course:

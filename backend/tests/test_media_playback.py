@@ -50,9 +50,7 @@ class FakeMediaClient:
         self.reports: list[int] = []
         self.report_kinds: list[MediaKind] = []
 
-    def fetch_metadata(
-        self, _task: MediaTask, *, fid: str, kind: MediaKind
-    ) -> MediaMetadata:
+    def fetch_metadata(self, _task: MediaTask, *, fid: str, kind: MediaKind) -> MediaMetadata:
         assert fid == "fid-1"
         assert kind is MediaKind.VIDEO
         return MediaMetadata(
@@ -95,9 +93,7 @@ class ScriptedMediaClient:
         self.fetch_kinds: list[MediaKind] = []
         self.reports: list[tuple[MediaKind, int, str]] = []
 
-    def fetch_metadata(
-        self, _task: MediaTask, *, fid: str, kind: MediaKind
-    ) -> MediaMetadata:
+    def fetch_metadata(self, _task: MediaTask, *, fid: str, kind: MediaKind) -> MediaMetadata:
         assert fid == "fid-1"
         self.fetch_kinds.append(kind)
         result = self.metadata_results.pop(0)
@@ -198,6 +194,38 @@ def test_already_passed_initial_report_does_not_sleep_or_jump_to_end() -> None:
     assert client.reports == [15]
     assert clock.sleeps == []
     assert result.final_play_time_seconds == 15
+
+
+def test_short_clip_sends_intermediate_reports_and_observes_required_time() -> None:
+    clock = FakeClock()
+
+    class ObservationClient(FakeMediaClient):
+        def report_progress(self, **kwargs) -> ProgressReportResult:
+            super().report_progress(**kwargs)
+            return ProgressReportResult(clock.value >= 34, "0.9")
+
+    client = ObservationClient(duration=34, pass_on_report=999)
+    control = FakeControl()
+    playback, _events = runner(client, clock, control)
+    media = MediaTask(
+        job_id="job-1",
+        object_id="object-1",
+        other_info="node-rt_d",
+        attention_duration="34",
+    )
+    result = playback.run(
+        course=course(),
+        task=media,
+        fid="fid-1",
+        user_id="user-1",
+        speed=1.5,
+        kind=MediaKind.VIDEO,
+        report_interval_seconds=60,
+    )
+    assert any(0 < point < 34 for point in client.reports)
+    assert clock.value >= 34
+    assert result.final_play_time_seconds == 34
+    assert control.checkpoints >= 34
 
 
 def test_metadata_audio_hint_controls_reports_and_event_names() -> None:

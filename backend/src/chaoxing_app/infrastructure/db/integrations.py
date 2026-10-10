@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from datetime import datetime
 from typing import Any, cast
+from urllib.parse import urlsplit
+from uuid import uuid4
 
 from sqlalchemy import insert, select, update
 from sqlalchemy.engine import CursorResult
@@ -79,23 +81,15 @@ _DEFAULT_ANSWER_PUBLIC: dict[str, object] = {
     "profile": AnswerProfile().to_json(),
 }
 
-_ANSWER_COMMON_FIELDS = frozenset(
-    {"enabled", "provider", "submit_mode", "threshold", "profile"}
-)
+_ANSWER_COMMON_FIELDS = frozenset({"enabled", "provider", "submit_mode", "threshold", "profile"})
 _PROVIDER_PUBLIC_FIELDS: dict[AnswerProviderKind, frozenset[str]] = {
     AnswerProviderKind.YANXI: frozenset({"endpoint", "allow_unsafe_endpoint"}),
-    AnswerProviderKind.LIKE: frozenset(
-        {"endpoint", "model", "search", "allow_unsafe_endpoint"}
-    ),
-    AnswerProviderKind.TIKU_ADAPTER: frozenset(
-        {"endpoint", "allow_unsafe_endpoint"}
-    ),
+    AnswerProviderKind.LIKE: frozenset({"endpoint", "model", "search", "allow_unsafe_endpoint"}),
+    AnswerProviderKind.TIKU_ADAPTER: frozenset({"endpoint", "allow_unsafe_endpoint"}),
     AnswerProviderKind.OPENAI_COMPATIBLE: frozenset(
         {"base_url", "model", "headers", "allow_unsafe_endpoint"}
     ),
-    AnswerProviderKind.SILICONFLOW: frozenset(
-        {"base_url", "model", "allow_unsafe_endpoint"}
-    ),
+    AnswerProviderKind.SILICONFLOW: frozenset({"base_url", "model", "allow_unsafe_endpoint"}),
 }
 _PROVIDER_SECRET_FIELD: dict[AnswerProviderKind, str | None] = {
     AnswerProviderKind.YANXI: "tokens",
@@ -135,6 +129,32 @@ def _normalize_provider_headers(value: object) -> dict[str, str]:
     return normalized
 
 
+def _with_opencode_headers(
+    config: dict[str, object],
+    previous_headers: object,
+) -> dict[str, object]:
+    """Persist per-configuration routing defaults, also for non-UI clients."""
+    base_url = config.get("base_url")
+    hostname = urlsplit(base_url).hostname if isinstance(base_url, str) else None
+    hostname = (hostname or "").rstrip(".").casefold()
+    if hostname != "opencode.ai" and not hostname.endswith(".opencode.ai"):
+        return config
+    headers = _normalize_provider_headers(config.get("headers"))
+    previous = _normalize_provider_headers(previous_headers)
+    previous = {name.casefold(): value for name, value in previous.items() if value}
+    for default_name in ("x-opencode-session", "User-Agent"):
+        name = next(
+            (key for key in headers if key.casefold() == default_name.casefold()), default_name
+        )
+        if headers.get(name):
+            continue
+        value = previous.get(default_name.casefold())
+        if not value:
+            value = str(uuid4()) if default_name == "x-opencode-session" else "chaoxing-app/0.1"
+        headers[name] = value
+    return {**config, "headers": _normalize_provider_headers(headers)}
+
+
 class IntegrationConfigurationError(ValueError):
     """A sanitized integration configuration failure suitable for an API response."""
 
@@ -149,8 +169,6 @@ class IntegrationRevisionConflict(ValueError):
 
 class NotificationIntegrationRevisionMismatch(IntegrationConfigurationError):
     """The queued task points at a notification configuration that is no longer current."""
-
-
 
 
 @dataclass(frozen=True, slots=True)
@@ -258,9 +276,7 @@ class IntegrationSettingRepository:
         self._validate_answer_enabled(state, secrets, enabled=enabled)
         public_json = state.to_public_json()
         changed = (
-            enabled != model.enabled
-            or public_json != model.public_config
-            or secrets != old_secrets
+            enabled != model.enabled or public_json != model.public_config or secrets != old_secrets
         )
         if changed:
             next_revision = model.revision + 1
@@ -402,8 +418,8 @@ class IntegrationSettingRepository:
                 "reset cannot be combined with other notification settings"
             )
         next_enabled = False if reset else (enabled if enabled is not None else model.enabled)
-        secrets = {} if reset else self._patch_notification_secrets(
-            channel, old_secrets, secret_changes
+        secrets = (
+            {} if reset else self._patch_notification_secrets(channel, old_secrets, secret_changes)
         )
         self._validate_notification_enabled(channel, secrets, enabled=next_enabled)
 
@@ -577,9 +593,7 @@ class IntegrationSettingRepository:
             value = changes[key]
             if key in {"search", "allow_unsafe_endpoint"}:
                 if not isinstance(value, bool):
-                    raise IntegrationConfigurationError(
-                        "answer provider switches must be boolean"
-                    )
+                    raise IntegrationConfigurationError("answer provider switches must be boolean")
                 selected[key] = value
             elif key == "headers":
                 selected[key] = _normalize_provider_headers(value)
@@ -587,7 +601,13 @@ class IntegrationSettingRepository:
                 raise IntegrationConfigurationError("answer provider text fields must be strings")
             else:
                 selected[key] = value.strip()
-        configs[provider.value] = self._normalize_provider_config(provider, selected)
+        normalized = self._normalize_provider_config(provider, selected)
+        if provider is AnswerProviderKind.OPENAI_COMPATIBLE:
+            normalized = _with_opencode_headers(
+                normalized,
+                state.provider_configs[provider.value].get("headers"),
+            )
+        configs[provider.value] = normalized
         profile = state.profile
         if "profile" in changes:
             raw_profile = changes["profile"]
@@ -607,9 +627,7 @@ class IntegrationSettingRepository:
         normalized: dict[str, object] = {}
         allow_unsafe = config.get("allow_unsafe_endpoint", False)
         if not isinstance(allow_unsafe, bool):
-            raise IntegrationConfigurationError(
-                "answer provider endpoint policy is invalid"
-            )
+            raise IntegrationConfigurationError("answer provider endpoint policy is invalid")
         for key in _PROVIDER_PUBLIC_FIELDS[provider]:
             value = config.get(
                 key,
@@ -617,15 +635,11 @@ class IntegrationSettingRepository:
             )
             if key in {"search", "allow_unsafe_endpoint"}:
                 if not isinstance(value, bool):
-                    raise IntegrationConfigurationError(
-                        "answer provider switches must be boolean"
-                    )
+                    raise IntegrationConfigurationError("answer provider switches must be boolean")
                 normalized[key] = value
                 continue
             if key == "headers":
-                normalized[key] = _normalize_provider_headers(
-                    value if value else {}
-                )
+                normalized[key] = _normalize_provider_headers(value if value else {})
                 continue
             if not isinstance(value, str):
                 raise IntegrationConfigurationError("answer provider configuration is invalid")
@@ -699,7 +713,8 @@ class IntegrationSettingRepository:
         config = state.provider_configs[state.provider.value]
         required_public = (
             ("endpoint",)
-            if state.provider in {
+            if state.provider
+            in {
                 AnswerProviderKind.YANXI,
                 AnswerProviderKind.LIKE,
                 AnswerProviderKind.TIKU_ADAPTER,
@@ -707,8 +722,7 @@ class IntegrationSettingRepository:
             else ("base_url", "model")
         )
         if any(
-            not isinstance(config.get(field), str) or not config[field]
-            for field in required_public
+            not isinstance(config.get(field), str) or not config[field] for field in required_public
         ):
             raise IntegrationConfigurationError(
                 f"{state.provider.value} configuration is incomplete"
@@ -725,9 +739,11 @@ class IntegrationSettingRepository:
         current: dict[str, str],
         changes: dict[str, object],
     ) -> dict[str, str]:
-        allowed = {"bot_token", "chat_id"} if channel is NotificationChannelKind.TELEGRAM else {
-            "webhook_url"
-        }
+        allowed = (
+            {"bot_token", "chat_id"}
+            if channel is NotificationChannelKind.TELEGRAM
+            else {"webhook_url"}
+        )
         if set(changes) - allowed:
             raise IntegrationConfigurationError(
                 f"secret fields are not valid for {channel.value} configuration"
@@ -738,9 +754,7 @@ class IntegrationSettingRepository:
                 secrets.pop(field, None)
                 continue
             if not isinstance(value, str):
-                raise IntegrationConfigurationError(
-                    "notification secret configuration is invalid"
-                )
+                raise IntegrationConfigurationError("notification secret configuration is invalid")
             maximum_length = {
                 "webhook_url": 32_768,
                 "bot_token": 4_096,
@@ -770,8 +784,10 @@ class IntegrationSettingRepository:
     ) -> None:
         if not enabled:
             return
-        required = ("bot_token", "chat_id") if channel is NotificationChannelKind.TELEGRAM else (
-            "webhook_url",
+        required = (
+            ("bot_token", "chat_id")
+            if channel is NotificationChannelKind.TELEGRAM
+            else ("webhook_url",)
         )
         if any(not secrets.get(field) for field in required):
             raise IntegrationConfigurationError(
@@ -788,8 +804,7 @@ class IntegrationSettingRepository:
             )
             decoded: object = json.loads(plaintext)
             if not isinstance(decoded, dict) or not all(
-                isinstance(key, str) and isinstance(value, str)
-                for key, value in decoded.items()
+                isinstance(key, str) and isinstance(value, str) for key, value in decoded.items()
             ):
                 raise ValueError
             return dict(decoded)
@@ -853,9 +868,7 @@ class IntegrationSettingRepository:
             else False
         )
         if state.provider is AnswerProviderKind.OPENAI_COMPATIBLE:
-            has_api_key = bool(
-                secrets.get(f"{AnswerProviderKind.OPENAI_COMPATIBLE.value}.api_key")
-            )
+            has_api_key = bool(secrets.get(f"{AnswerProviderKind.OPENAI_COMPATIBLE.value}.api_key"))
         elif state.provider is AnswerProviderKind.SILICONFLOW:
             has_api_key = bool(secrets.get(f"{AnswerProviderKind.SILICONFLOW.value}.api_key"))
         else:

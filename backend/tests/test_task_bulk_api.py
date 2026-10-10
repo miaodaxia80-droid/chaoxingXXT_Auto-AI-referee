@@ -1,11 +1,14 @@
 import tempfile
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from fastapi.testclient import TestClient
-from sqlalchemy import func, select
+from sqlalchemy import event, func, select
 from sqlalchemy.orm import Session
 
 from chaoxing_app.infrastructure.db.models import Event, StudyTask
+from chaoxing_app.infrastructure.db.tasks import StudyTaskRepository
 from chaoxing_app.main import create_app
 from chaoxing_app.settings import AppSettings
 
@@ -81,9 +84,7 @@ def test_bulk_create_commits_successful_items_and_reports_each_failure() -> None
                 task_payload(account_id, 1),
                 task_payload(account_id, 3),
             ]
-            unauthorized = client.post(
-                "/api/v1/tasks/bulk-create", json={"tasks": payloads}
-            )
+            unauthorized = client.post("/api/v1/tasks/bulk-create", json={"tasks": payloads})
             assert unauthorized.status_code == 403
 
             response = client.post(
@@ -197,9 +198,14 @@ def test_bulk_delete_and_history_cleanup_never_delete_active_tasks() -> None:
             with Session(app.state.engine) as session:
                 assert session.get(StudyTask, active) is not None
                 assert session.get(StudyTask, first_terminal) is None
-                assert session.scalar(
-                    select(func.count()).select_from(Event).where(Event.task_id == first_terminal)
-                ) == 0
+                assert (
+                    session.scalar(
+                        select(func.count())
+                        .select_from(Event)
+                        .where(Event.task_id == first_terminal)
+                    )
+                    == 0
+                )
 
             cleaned = client.delete("/api/v1/tasks/history", headers=headers)
             assert cleaned.status_code == 200
@@ -228,3 +234,75 @@ def test_bulk_requests_reject_duplicate_task_ids() -> None:
                 json={"task_ids": ["same", "same"]},
             )
             assert deleted.status_code == 422
+
+
+def test_bulk_create_is_not_visible_to_workers_before_batch_commit(monkeypatch) -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        app, client = make_client(temp_dir)
+        with client:
+            csrf, account_id = bootstrap(client)
+            second_started = threading.Event()
+            release = threading.Event()
+            original = StudyTaskRepository.create
+            calls = 0
+
+            def create(*args, **kwargs):
+                nonlocal calls
+                calls += 1
+                if calls == 2:
+                    second_started.set()
+                    assert release.wait(5)
+                return original(*args, **kwargs)
+
+            monkeypatch.setattr(StudyTaskRepository, "create", create)
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(
+                    client.post,
+                    "/api/v1/tasks/bulk-create",
+                    headers={"X-CSRF-Token": csrf},
+                    json={"tasks": [task_payload(account_id, 1), task_payload(account_id, 2)]},
+                )
+                try:
+                    assert second_started.wait(5)
+                    with Session(app.state.engine) as reader:
+                        assert reader.scalar(select(func.count()).select_from(StudyTask)) == 0
+                finally:
+                    release.set()
+                assert future.result(timeout=5).json()["created"] == 2
+            with Session(app.state.engine) as reader:
+                assert reader.scalar(select(func.count()).select_from(StudyTask)) == 2
+
+
+def test_task_write_lock_timeout_is_retryable_and_does_not_partially_create() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        app, client = make_client(temp_dir)
+        with client:
+            csrf, account_id = bootstrap(client)
+
+            def short_busy_timeout(connection, _record, _proxy):
+                connection.execute("PRAGMA busy_timeout=50")
+
+            event.listen(app.state.engine, "checkout", short_busy_timeout)
+            try:
+                with app.state.engine.connect() as writer:
+                    writer.exec_driver_sql("BEGIN IMMEDIATE")
+                    response = client.post(
+                        "/api/v1/tasks/bulk-create",
+                        headers={"X-CSRF-Token": csrf},
+                        json={"tasks": [task_payload(account_id, 1), task_payload(account_id, 2)]},
+                    )
+                    assert response.status_code == 503
+                    assert response.headers["Retry-After"] == "1"
+                    writer.rollback()
+                with Session(app.state.engine) as reader:
+                    assert reader.scalar(select(func.count()).select_from(StudyTask)) == 0
+                assert (
+                    client.post(
+                        "/api/v1/tasks/bulk-create",
+                        headers={"X-CSRF-Token": csrf},
+                        json={"tasks": [task_payload(account_id, 1), task_payload(account_id, 2)]},
+                    ).json()["created"]
+                    == 2
+                )
+            finally:
+                event.remove(app.state.engine, "checkout", short_busy_timeout)

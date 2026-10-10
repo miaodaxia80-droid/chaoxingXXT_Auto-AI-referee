@@ -8,7 +8,13 @@ from urllib.parse import urlsplit
 
 import requests
 
-from chaoxing_app.platform.errors import PlatformConfigurationError
+from chaoxing_app.platform.errors import (
+    AnswerProviderHTTPError,
+    PlatformConfigurationError,
+    PlatformParseError,
+    PlatformTimeoutError,
+    PlatformTransportError,
+)
 from chaoxing_app.platform.task_points.quiz import ProviderAnswer
 
 type RequestTimeout = tuple[float, float]
@@ -148,10 +154,25 @@ class JSONHTTPClient:
                 verify=self._tls_verify,
                 allow_redirects=False,
             )
-            if response.status_code != 200:
-                return None
+        except requests.Timeout:
+            raise PlatformTimeoutError("answer provider") from None
+        except Exception:
+            # Do not retain the original exception: request exceptions can
+            # include credentials, request headers and private endpoint URLs.
+            raise PlatformTransportError("answer provider") from None
+        if response.status_code != 200:
+            session_required = False
+            try:
+                envelope = as_mapping(response.json())
+                error = as_mapping(envelope.get("error")) if envelope else None
+                session_required = error is not None and error.get("type") == "MissingSessionID"
+            except Exception:
+                pass
+            raise AnswerProviderHTTPError(
+                response.status_code, session_required=session_required
+            ) from None
+        try:
             payload: object = response.json()
             return payload
         except Exception:
-            # Provider failures are intentionally opaque: upstream treats None as unanswered.
-            return None
+            raise PlatformParseError("answer provider", "response is not valid JSON") from None

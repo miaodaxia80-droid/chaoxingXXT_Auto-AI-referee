@@ -1,6 +1,6 @@
 import { expect, test, type Page, type Route } from '@playwright/test'
 
-import type { Account, StudyTask, SystemEvent } from '../src/api/types'
+import type { Account, AnswerProviderKind, StudyTask, SystemEvent } from '../src/api/types'
 
 type ApiState = {
   authenticated: boolean
@@ -9,6 +9,7 @@ type ApiState = {
 
 type MockApiOptions = Partial<ApiState> & {
   accounts?: Account[]
+  answerProvider?: AnswerProviderKind
   events?: SystemEvent[]
   streamEvents?: SystemEvent[]
   tasks?: StudyTask[]
@@ -192,7 +193,7 @@ async function mockApi(page: Page, initial: MockApiOptions = {}): Promise<ApiSta
     if (path === '/settings/integrations/answer') {
       await json(route, 200, {
         enabled: false,
-        provider: 'yanxi',
+        provider: initial.answerProvider ?? 'yanxi',
         submit_mode: 'save_only',
         threshold: 0.8,
         revision: 1,
@@ -674,6 +675,55 @@ test('account credential forms opt out of saved administrator autofill', async (
   )
 })
 
+for (const nativeUuid of [true, false]) {
+  test(`OpenCode request headers are saved and retain the routing session (native UUID: ${nativeUuid})`, async ({ page }) => {
+    if (!nativeUuid) {
+      // randomUUID is absent on typical HTTP LAN deployments; getRandomValues
+      // remains available. Exercise that browser capability combination.
+      await page.addInitScript(() => {
+        Object.defineProperty(Crypto.prototype, 'randomUUID', { value: undefined, configurable: true })
+      })
+    }
+    await mockApi(page, { authenticated: true, answerProvider: 'openai_compatible' })
+    let submitted: Record<string, unknown> | null = null
+    let savedConfig = { base_url: '', model: '', headers: {} as Record<string, string> }
+    await page.route('**/api/v1/settings/integrations/answer', async (route) => {
+      if (route.request().method() !== 'GET') {
+        submitted = route.request().postDataJSON() as Record<string, unknown>
+        savedConfig = {
+          base_url: String(submitted.base_url), model: String(submitted.model),
+          headers: submitted.headers as Record<string, string>,
+        }
+      }
+      await json(route, 200, {
+        enabled: false, provider: 'openai_compatible', submit_mode: 'save_only', threshold: 0.8,
+        revision: submitted ? 2 : 1, config: savedConfig, profile: null,
+        has_tokens: false, has_token: false, has_api_key: true,
+        updated_at: '2030-01-01T00:00:00Z',
+      })
+    })
+    await page.goto('/settings?tab=answer')
+    await page.locator('.n-form-item').filter({
+      has: page.getByText('API 地址', { exact: true }),
+    }).locator('input').fill('https://opencode.ai/zen/go/v1')
+    await page.locator('.n-form-item').filter({
+      has: page.getByText('模型', { exact: true }),
+    }).locator('input').fill('deepseek-v4.1-flash')
+    const rows = page.locator('.header-row')
+    const sessionRow = rows.filter({ has: page.locator('input[value="x-opencode-session"]') })
+    await expect(rows).toHaveCount(2)
+    const sessionId = await sessionRow.getByRole('textbox', { name: '请求头值' }).inputValue()
+    expect(sessionId).toMatch(/^[\da-f]{8}-[\da-f]{4}-4[\da-f]{3}-[89ab][\da-f]{3}-[\da-f]{12}$/)
+    await page.locator('.n-form').filter({ has: page.locator('.header-row') })
+      .getByRole('button', { name: '保存', exact: true }).click()
+    await expect.poll(() => submitted?.headers).toEqual({
+      'x-opencode-session': sessionId, 'User-Agent': 'chaoxing-app/0.1',
+    })
+    await page.reload()
+    await expect(sessionRow.getByRole('textbox', { name: '请求头值' })).toHaveValue(sessionId)
+  })
+}
+
 test('icons and step markers stay centered in their visual containers', async ({ page }) => {
   await mockApi(page, {
     authenticated: true,
@@ -705,7 +755,7 @@ test('icons and step markers stay centered in their visual containers', async ({
   await expectCenteredContent(page, '.profile-icon', 'svg')
 
   await page.goto('/tasks')
-  await page.getByRole('button', { name: '新建任务' }).click()
+  await page.getByRole('button', { name: '新建任务' }).first().click()
   await expect(page.locator('.step-index')).toHaveCount(3)
   await expectCenteredContent(page, '.step-index')
 })

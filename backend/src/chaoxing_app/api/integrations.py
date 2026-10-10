@@ -46,6 +46,7 @@ from chaoxing_app.infrastructure.notifications import (
 )
 from chaoxing_app.infrastructure.security.secrets import SecretBox
 from chaoxing_app.platform.errors import (
+    AnswerProviderHTTPError,
     PlatformConfigurationError,
     PlatformError,
     PlatformHTTPError,
@@ -106,6 +107,8 @@ def _notification_failure_reason(error: Exception) -> str:
 
 
 def _answer_failure_reason(error: Exception) -> str:
+    if isinstance(error, AnswerProviderHTTPError):
+        return error.reason
     if isinstance(error, PlatformConfigurationError):
         return "configuration_invalid"
     if isinstance(error, PlatformTimeoutError):
@@ -207,9 +210,7 @@ def update_answer_integration(
         value = raw.pop(field, None)
         if clear and supplied:
             raise _configuration_error(
-                IntegrationConfigurationError(
-                    f"{field} cannot be set and cleared together"
-                )
+                IntegrationConfigurationError(f"{field} cannot be set and cleared together")
             )
         if clear:
             secret_changes[field] = None
@@ -291,9 +292,7 @@ def update_notification_integration(
         value = raw.pop(field, None)
         if clear and supplied:
             raise _configuration_error(
-                IntegrationConfigurationError(
-                    f"{field} cannot be set and cleared together"
-                )
+                IntegrationConfigurationError(f"{field} cannot be set and cleared together")
             )
         if clear:
             secret_changes[field] = None

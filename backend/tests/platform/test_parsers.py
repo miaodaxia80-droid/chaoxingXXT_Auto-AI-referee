@@ -34,9 +34,7 @@ class CourseListParserTests(unittest.TestCase):
 
     def test_missing_required_course_field_is_explicit(self) -> None:
         with self.assertRaisesRegex(PlatformParseError, "missing element for value"):
-            parse_course_list(
-                '<div class="course"><input class="courseId" value="course-1"></div>'
-            )
+            parse_course_list('<div class="course"><input class="courseId" value="course-1"></div>')
 
     def test_parses_course_folders(self) -> None:
         folders = parse_course_folders(fixture("course_folders.html"))
@@ -69,6 +67,23 @@ class ChapterListParserTests(unittest.TestCase):
         """
         with self.assertRaisesRegex(PlatformParseError, "invalid job count"):
             parse_chapter_list(html)
+
+    def test_material_chapter_zero_badge_does_not_invent_a_job(self) -> None:
+        html = """<div class="chapter_unit"><li><div id="cur42">
+        <a class="clicktitle">14.6 本章课件</a>
+        <span class="catalog_points_yi">0</span>
+        </div></li></div>"""
+        chapter = parse_chapter_list(html).chapters[0]
+        self.assertEqual(chapter.job_count, 0)
+        self.assertFalse(chapter.is_completed)
+
+    def test_explicit_pending_count_outranks_visible_badge(self) -> None:
+        html = """<div class="chapter_unit"><li><div id="cur42">
+        <a class="clicktitle">Video</a>
+        <input class="knowledgeJobCount" value="2">
+        <span class="catalog_points_yi">0</span>
+        </div></li></div>"""
+        self.assertEqual(parse_chapter_list(html).chapters[0].job_count, 2)
 
 
 if __name__ == "__main__":

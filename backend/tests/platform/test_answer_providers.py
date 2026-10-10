@@ -15,7 +15,12 @@ from chaoxing_app.platform.answer_providers import (
     TikuAdapterAnswerProvider,
     YanxiAnswerProvider,
 )
-from chaoxing_app.platform.errors import PlatformConfigurationError
+from chaoxing_app.platform.errors import (
+    AnswerProviderHTTPError,
+    PlatformConfigurationError,
+    PlatformParseError,
+    PlatformTransportError,
+)
 from chaoxing_app.platform.task_points.quiz import (
     AnswerProvider,
     AnswerProviderCapability,
@@ -131,8 +136,7 @@ def test_like_request_and_typed_choice_response_contract() -> None:
     assert url == "https://api.datam.site/search"
     assert kwargs["json"] == {
         "query": (
-            "\u3010\u591a\u9009\u9898\u3011Select secure protocols\n"
-            "A. HTTPS, B. Telnet, C. SSH"
+            "\u3010\u591a\u9009\u9898\u3011Select secure protocols\nA. HTTPS, B. Telnet, C. SSH"
         ),
         "token": "like-key",
         "model": "knowledge-model",
@@ -144,9 +148,7 @@ def test_like_request_and_typed_choice_response_contract() -> None:
 
 
 def test_tiku_adapter_request_and_best_answer_contract() -> None:
-    session = StubSession(
-        [response({"plat": 0, "answer": {"bestAnswer": ["HTTPS", "SSH"]}})]
-    )
+    session = StubSession([response({"plat": 0, "answer": {"bestAnswer": ["HTTPS", "SSH"]}})])
     provider = TikuAdapterAnswerProvider(
         endpoint="https://adapter.example.test/v1/query",
         session=cast(requests.Session, session),
@@ -171,15 +173,7 @@ def test_tiku_adapter_request_and_best_answer_contract() -> None:
 
 def test_openai_compatible_chat_completion_contract_and_strict_json_response() -> None:
     session = StubSession(
-        [
-            response(
-                {
-                    "choices": [
-                        {"message": {"content": '```json\n{"Answer": ["C. SSH"]}\n```'}}
-                    ]
-                }
-            )
-        ]
+        [response({"choices": [{"message": {"content": '```json\n{"Answer": ["C. SSH"]}\n```'}}]})]
     )
     provider = OpenAICompatibleAnswerProvider(
         base_url="https://llm.example.test/v1",
@@ -220,9 +214,7 @@ def test_openai_compatible_chat_completion_contract_and_strict_json_response() -
 
 
 def test_openai_compatible_sends_custom_headers_without_overriding_auth() -> None:
-    session = StubSession(
-        [response({"choices": [{"message": {"content": '{"Answer": ["A"]}'}}]})]
-    )
+    session = StubSession([response({"choices": [{"message": {"content": '{"Answer": ["A"]}'}}]})])
     provider = OpenAICompatibleAnswerProvider(
         base_url="https://llm.example.test/v1",
         model="quiz-model",
@@ -336,8 +328,10 @@ def test_provider_transport_errors_are_safe_and_repr_is_redacted(
 ) -> None:
     provider = factory(cast(requests.Session, ExplodingSession()))
 
-    assert provider.answer(multiple_question()) is None
-    rendered = repr(provider)
+    with pytest.raises(PlatformTransportError) as error:
+        provider.answer(multiple_question())
+    rendered = repr(provider) + str(error.value)
+    assert error.value.__suppress_context__ is True
     assert provider_name.split("_")[0].casefold() in rendered.casefold()
     assert secret not in rendered
     assert "endpoint-secret" not in rendered
@@ -368,8 +362,11 @@ def test_provider_non_200_or_invalid_json_never_produces_an_answer(
     failed = StubSession([response({"answer": "A"}, status_code=503)])
     invalid = StubSession([ValueError("invalid JSON with api-key-secret")])
 
-    assert factory(cast(requests.Session, failed)).answer(multiple_question()) is None
-    assert factory(cast(requests.Session, invalid)).answer(multiple_question()) is None
+    with pytest.raises(AnswerProviderHTTPError) as error:
+        factory(cast(requests.Session, failed)).answer(multiple_question())
+    assert error.value.status_code == 503
+    with pytest.raises(PlatformTransportError, match="answer provider"):
+        factory(cast(requests.Session, invalid)).answer(multiple_question())
 
 
 @pytest.mark.parametrize(
@@ -474,7 +471,49 @@ def test_all_providers_require_explicit_opt_in_for_local_endpoints(
 ) -> None:
     provider = factory(cast(requests.Session, ExplodingSession()))
 
-    assert provider.answer(multiple_question()) is None
+    with pytest.raises(PlatformTransportError):
+        provider.answer(multiple_question())
+
+
+def test_provider_invalid_response_json_is_a_safe_parse_error() -> None:
+    invalid = response(None)
+    invalid._content = b"invalid JSON containing api-key-secret"
+    provider = TikuAdapterAnswerProvider(
+        endpoint="https://provider.example.test/query",
+        session=cast(requests.Session, StubSession([invalid])),
+    )
+    with pytest.raises(PlatformParseError) as error:
+        provider.answer(multiple_question())
+    assert "api-key-secret" not in str(error.value)
+
+
+def test_missing_session_header_is_reported_without_leaking_response() -> None:
+    provider = OpenAICompatibleAnswerProvider(
+        base_url="https://opencode.ai/zen/go/v1",
+        model="model",
+        api_key="secret",
+        session=cast(
+            requests.Session,
+            StubSession(
+                [
+                    response(
+                        {
+                            "error": {
+                                "type": "MissingSessionID",
+                                "message": "secret raw upstream message",
+                            },
+                        },
+                        status_code=400,
+                    )
+                ]
+            ),
+        ),
+    )
+    with pytest.raises(AnswerProviderHTTPError) as error:
+        provider.answer(multiple_question())
+    assert error.value.reason == "provider_session_required"
+    assert error.value.status_code == 400
+    assert "secret" not in str(error.value)
 
 
 @pytest.mark.parametrize(
@@ -537,15 +576,7 @@ def test_timeouts_must_be_finite_positive_numbers(timeout: object) -> None:
                 session=cast(
                     requests.Session,
                     StubSession(
-                        [
-                            response(
-                                {
-                                    "choices": [
-                                        {"message": {"content": '{"Answer": "A"}'}}
-                                    ]
-                                }
-                            )
-                        ]
+                        [response({"choices": [{"message": {"content": '{"Answer": "A"}'}}]})]
                     ),
                 ),
             ),

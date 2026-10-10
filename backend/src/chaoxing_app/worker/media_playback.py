@@ -123,6 +123,10 @@ class MediaPlaybackRunner:
         duration = state.metadata.duration_seconds
         play_time = min(float(task.initial_play_time_seconds), float(duration))
         report_interval = max(report_interval_seconds, 5)
+        if duration < report_interval:
+            # Short clips must still send intermediate heartbeats, rather than
+            # only an initial report and an accelerated jump to the end.
+            report_interval = max(duration // 3, 5)
         report_count = 0
         last_reported = int(play_time)
 
@@ -151,7 +155,14 @@ class MediaPlaybackRunner:
         if initial.result.is_passed:
             return PlaybackResult(duration, initial.playing_time_seconds, report_count, state.kind)
 
-        last_tick = self._monotonic()
+        started_at = self._monotonic()
+        last_tick = started_at
+        try:
+            required_observation = max(
+                min(float(task.attention_duration), duration) - play_time, 0.0
+            )
+        except ValueError:
+            required_observation = 0.0
         while play_time < duration:
             self._control.checkpoint()
             remaining_real_seconds = (duration - play_time) / speed
@@ -200,8 +211,17 @@ class MediaPlaybackRunner:
 
         for attempt in range(1, self._final_report_attempts):
             self._control.checkpoint()
-            if self._final_retry_delay:
-                self._sleep(self._final_retry_delay)
+            observation_remaining = max(
+                required_observation - (self._monotonic() - started_at), 0.0
+            )
+            retry_delay = max(
+                self._final_retry_delay,
+                observation_remaining / (self._final_report_attempts - attempt),
+            )
+            deadline = self._monotonic() + retry_delay
+            while self._monotonic() < deadline:
+                self._control.checkpoint()
+                self._sleep(min(self._checkpoint_interval, deadline - self._monotonic()))
             self._control.checkpoint()
             outcome = self._report(
                 course=course,
