@@ -21,6 +21,7 @@ type RequestTimeout = tuple[float, float]
 type TLSVerify = bool | str
 
 DEFAULT_TIMEOUT: Final[RequestTimeout] = (5.0, 30.0)
+TIMEOUT_RETRIES: Final = 1
 
 
 def require_nonempty(value: str, *, field: str) -> str:
@@ -143,23 +144,27 @@ class JSONHTTPClient:
         json_body: Mapping[str, object] | None = None,
         headers: Mapping[str, str] | None = None,
     ) -> object | None:
-        try:
-            response = self._session.request(
-                method,
-                self._endpoint,
-                params=params,
-                json=json_body,
-                headers=headers,
-                timeout=self._timeout,
-                verify=self._tls_verify,
-                allow_redirects=False,
-            )
-        except requests.Timeout:
-            raise PlatformTimeoutError("answer provider") from None
-        except Exception:
-            # Do not retain the original exception: request exceptions can
-            # include credentials, request headers and private endpoint URLs.
-            raise PlatformTransportError("answer provider") from None
+        for attempt in range(TIMEOUT_RETRIES + 1):
+            try:
+                response = self._session.request(
+                    method,
+                    self._endpoint,
+                    params=params,
+                    json=json_body,
+                    headers=headers,
+                    timeout=self._timeout,
+                    verify=self._tls_verify,
+                    allow_redirects=False,
+                )
+                break
+            except requests.Timeout:
+                if attempt < TIMEOUT_RETRIES:
+                    continue
+                raise PlatformTimeoutError("answer provider") from None
+            except Exception:
+                # Do not retain the original exception: request exceptions can
+                # include credentials, request headers and private endpoint URLs.
+                raise PlatformTransportError("answer provider") from None
         if response.status_code != 200:
             session_required = False
             try:

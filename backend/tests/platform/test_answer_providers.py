@@ -19,6 +19,7 @@ from chaoxing_app.platform.errors import (
     AnswerProviderHTTPError,
     PlatformConfigurationError,
     PlatformParseError,
+    PlatformTimeoutError,
     PlatformTransportError,
 )
 from chaoxing_app.platform.task_points.quiz import (
@@ -211,6 +212,49 @@ def test_openai_compatible_chat_completion_contract_and_strict_json_response() -
     assert kwargs["timeout"] == (3.0, 12.0)
     assert kwargs["verify"] is True
     assert kwargs["allow_redirects"] is False
+
+
+def test_answer_provider_retries_once_after_timeout() -> None:
+    session = StubSession(
+        [
+            requests.Timeout("private timeout detail"),
+            response({"choices": [{"message": {"content": '{"Answer": ["C. SSH"]}'}}]}),
+        ]
+    )
+    provider = OpenAICompatibleAnswerProvider(
+        base_url="https://llm.example.test/v1",
+        model="quiz-model",
+        api_key="openai-secret",
+        session=cast(requests.Session, session),
+        timeout=(3.0, 12.0),
+    )
+
+    answer = as_protocol(provider).answer(multiple_question())
+
+    assert_answer(answer, expected="C. SSH", source="openai_compatible")
+    assert len(session.calls) == 2
+    assert all(call[2]["timeout"] == (3.0, 12.0) for call in session.calls)
+
+
+def test_answer_provider_timeout_retry_is_bounded_and_sanitized() -> None:
+    session = StubSession(
+        [
+            requests.Timeout("first private timeout"),
+            requests.Timeout("second private timeout"),
+        ]
+    )
+    provider = OpenAICompatibleAnswerProvider(
+        base_url="https://llm.example.test/v1",
+        model="quiz-model",
+        api_key="openai-secret",
+        session=cast(requests.Session, session),
+    )
+
+    with pytest.raises(PlatformTimeoutError, match="answer provider") as error:
+        as_protocol(provider).answer(multiple_question())
+
+    assert len(session.calls) == 2
+    assert "private timeout" not in str(error.value)
 
 
 def test_openai_compatible_sends_custom_headers_without_overriding_auth() -> None:
