@@ -12,6 +12,7 @@ import requests
 from bs4 import BeautifulSoup, Tag
 
 from chaoxing_app.platform.errors import (
+    AnswerProviderHTTPError,
     PlatformAuthenticationError,
     PlatformConfigurationError,
     PlatformHTTPError,
@@ -24,9 +25,7 @@ from chaoxing_app.platform.task_points._http import RequestTimeout, TaskPointHTT
 from chaoxing_app.platform.task_points.cards import JobDefaults, QuizTaskPoint
 
 _QUIZ_PAGE_URL: Final = "https://mooc1.chaoxing.com/mooc-ans/api/work"
-_QUIZ_SUBMISSION_URL: Final = (
-    "https://mooc1.chaoxing.com/mooc-ans/work/addStudentWorkNew"
-)
+_QUIZ_SUBMISSION_URL: Final = "https://mooc1.chaoxing.com/mooc-ans/work/addStudentWorkNew"
 _LOGIN_HOST: Final = "passport2.chaoxing.com"
 _LOGIN_MARKER: Final = "\u7528\u6237\u767b\u5f55"
 _QUESTION_SELECTOR: Final = ".singleQuesId, [data-question-id]"
@@ -138,9 +137,7 @@ class QuizForm:
 
     def __post_init__(self) -> None:
         normalized_fields = {
-            str(key).strip(): str(value)
-            for key, value in self.fields.items()
-            if str(key).strip()
+            str(key).strip(): str(value) for key, value in self.fields.items() if str(key).strip()
         }
         object.__setattr__(self, "fields", MappingProxyType(normalized_fields))
         object.__setattr__(self, "questions", tuple(self.questions))
@@ -249,6 +246,8 @@ class QuizAnswerResolution:
     provider_error_count: int
     provider_configured: bool
     total_questions: int
+    provider_failure_reason: str = ""
+    provider_status_code: int | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "answers", MappingProxyType(dict(self.answers)))
@@ -279,6 +278,8 @@ class QuizSubmissionResult:
     status_code: int | None = None
     reason: str = ""
     provider_error_count: int = 0
+    provider_failure_reason: str = ""
+    provider_status_code: int | None = None
 
     @property
     def submitted(self) -> bool:
@@ -286,10 +287,15 @@ class QuizSubmissionResult:
 
     @property
     def saved(self) -> bool:
-        return self.accepted and self.status in {
-            QuizSubmissionStatus.SAVED,
-            QuizSubmissionStatus.UNSUBMITTED,
-        } and self.status_code is not None
+        return (
+            self.accepted
+            and self.status
+            in {
+                QuizSubmissionStatus.SAVED,
+                QuizSubmissionStatus.UNSUBMITTED,
+            }
+            and self.status_code is not None
+        )
 
     @property
     def unsubmitted(self) -> bool:
@@ -353,9 +359,7 @@ def _html_question(element: Tag, index: int) -> QuizQuestion:
         raw_type = _tag_attribute(element, "data-question-type", "data-type")
     question_type, type_code = _question_type(raw_type)
 
-    title_element = element.select_one(
-        ".Zy_TItle, .question-title, [data-question-title], .stem"
-    )
+    title_element = element.select_one(".Zy_TItle, .question-title, [data-question-title], .stem")
     title = _tag_text(title_element)
     if not title:
         raise PlatformParseError(resource, "missing question title")
@@ -476,8 +480,7 @@ def _json_form(payload: object) -> QuizForm | None:
         if isinstance(value, (str, int, float)) and not isinstance(value, bool)
     }
     questions = tuple(
-        _json_question(question, index)
-        for index, question in enumerate(raw_questions, start=1)
+        _json_question(question, index) for index, question in enumerate(raw_questions, start=1)
     )
     return QuizForm(fields=fields, questions=questions)
 
@@ -596,17 +599,13 @@ def normalize_quiz_answer(
         parts = _answer_parts(value)
         if len(parts) == 1 and len(parts[0]) > 1:
             compact = parts[0].replace(" ", "").upper()
-            valid_codes = {
-                _option_code(question, index) for index in range(len(question.options))
-            }
+            valid_codes = {_option_code(question, index) for index in range(len(question.options))}
             if compact and set(compact) <= valid_codes:
                 parts = tuple(compact)
         codes = {_match_option(question, part) for part in parts}
         if None in codes or not codes:
             return None
-        order = {
-            _option_code(question, index): index for index in range(len(question.options))
-        }
+        order = {_option_code(question, index): index for index in range(len(question.options))}
         return "".join(
             sorted((code for code in codes if code is not None), key=lambda code: order[code])
         )
@@ -640,12 +639,40 @@ def resolve_quiz_answers(
     answers: dict[str, str] = {}
     unanswered: list[str] = []
     provider_errors = 0
+    failure_reason = ""
+    provider_status_code: int | None = None
+    blocked = False
     for question in form.questions:
+        if blocked:
+            unanswered.append(question.question_id)
+            continue
         try:
             raw_answer = provider.answer(question, course_context=course_context)
-        except Exception:
+        except Exception as exc:
             provider_errors += 1
             unanswered.append(question.question_id)
+            if not failure_reason:
+                failure_reason = "provider_error"
+                if isinstance(exc, PlatformHTTPError):
+                    provider_status_code = exc.status_code
+                    failure_reason = (
+                        exc.reason
+                        if isinstance(exc, AnswerProviderHTTPError)
+                        else "provider_http_error"
+                    )
+                elif isinstance(exc, PlatformTimeoutError):
+                    failure_reason = "provider_timeout"
+                elif isinstance(exc, PlatformParseError):
+                    failure_reason = "provider_response_invalid"
+            # A rejected credential, model/endpoint or throttled service cannot
+            # be repaired by sending every remaining question in this quiz.
+            blocked = isinstance(exc, PlatformHTTPError) and exc.status_code in {
+                400,
+                401,
+                403,
+                404,
+                429,
+            }
             continue
         answer = normalize_quiz_answer(question, raw_answer)
         if answer is None:
@@ -658,6 +685,8 @@ def resolve_quiz_answers(
         provider_error_count=provider_errors,
         provider_configured=True,
         total_questions=len(form.questions),
+        provider_failure_reason=failure_reason,
+        provider_status_code=provider_status_code,
     )
 
 
@@ -910,6 +939,8 @@ class QuizTaskClient(TaskPointHTTPClient):
             provider_error_count=max(resolution.provider_error_count, 0),
             provider_configured=resolution.provider_configured,
             total_questions=len(form.questions),
+            provider_failure_reason=resolution.provider_failure_reason,
+            provider_status_code=resolution.provider_status_code,
         )
 
     @staticmethod
@@ -961,4 +992,6 @@ class QuizTaskClient(TaskPointHTTPClient):
             status_code=status_code,
             reason=reason,
             provider_error_count=resolution.provider_error_count,
+            provider_failure_reason=resolution.provider_failure_reason,
+            provider_status_code=resolution.provider_status_code,
         )

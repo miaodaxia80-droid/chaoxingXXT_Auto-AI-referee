@@ -27,6 +27,14 @@ class PlatformHTTPError(PlatformError):
         self.status_code = status_code
 
 
+class AnswerProviderHTTPError(PlatformHTTPError):
+    """Sanitized provider rejection; never retains a URL, body or credential."""
+
+    def __init__(self, status_code: int, *, session_required: bool = False) -> None:
+        super().__init__("answer provider", status_code)
+        self.reason = "provider_session_required" if session_required else "provider_http_error"
+
+
 class PlatformAuthenticationError(PlatformError):
     """Raised when credentials or an existing platform session are rejected."""
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import secrets
+import sqlite3
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -8,6 +9,7 @@ from typing import Literal, cast
 
 from fastapi import Depends, Header, HTTPException, Request, status
 from sqlalchemy import select
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, sessionmaker
 
 from chaoxing_app.infrastructure.db.models import AdminUser, AppUser, WebSession
@@ -47,12 +49,33 @@ def get_wechat_client(request: Request) -> WeChatClient:
 
 
 def get_db(
+    request: Request,
     factory: sessionmaker[Session] = Depends(get_session_factory),
 ) -> Iterator[Session]:
     session = factory()
     try:
+        # SQLite's legacy transaction mode does not BEGIN before a SAVEPOINT.
+        # Without a real outer transaction, releasing the first bulk item's
+        # savepoint makes it visible to workers while the batch is still writing.
+        # Reserve the writer before authentication reads to also avoid a WAL
+        # read-snapshot -> write upgrade racing the worker's progress updates.
+        task_write = request.method in {"POST", "PUT", "PATCH", "DELETE"} and (
+            request.url.path == "/api/v1/tasks" or request.url.path.startswith("/api/v1/tasks/")
+        )
+        if task_write and session.get_bind().dialect.name == "sqlite":
+            session.connection().exec_driver_sql("BEGIN IMMEDIATE")
         yield session
         session.commit()
+    except OperationalError as exc:
+        session.rollback()
+        code = getattr(exc.orig, "sqlite_errorcode", None)
+        if isinstance(code, int) and code & 0xFF in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED}:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="database is busy; retry the request shortly",
+                headers={"Retry-After": "1"},
+            ) from None
+        raise
     except BaseException:
         session.rollback()
         raise

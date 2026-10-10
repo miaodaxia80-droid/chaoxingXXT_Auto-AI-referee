@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import tempfile
 from pathlib import Path
+from uuid import UUID
 
 import pytest
 from fastapi.testclient import TestClient
@@ -83,24 +84,24 @@ def test_integration_reads_require_login_and_writes_require_csrf() -> None:
                 "submit_mode": "auto",
                 "threshold": 0.8,
                 "revision": 1,
-                    "config": {
+                "config": {
                     "endpoint": "https://tk.enncy.cn/query",
                     "base_url": None,
                     "model": None,
                     "headers": None,
                     "search": None,
                     "allow_unsafe_endpoint": False,
-                    },
-                    "profile": {
-                        "ensemble_enabled": False,
-                        "models": [],
-                        "referee_model": "",
-                        "max_workers": 4,
-                        "cache_enabled": True,
-                        "cache_ttl_seconds": 604800,
-                        "course_context_enabled": True,
-                        "web_search_enabled": False,
-                    },
+                },
+                "profile": {
+                    "ensemble_enabled": False,
+                    "models": [],
+                    "referee_model": "",
+                    "max_workers": 4,
+                    "cache_enabled": True,
+                    "cache_ttl_seconds": 604800,
+                    "course_context_enabled": True,
+                    "web_search_enabled": False,
+                },
                 "has_tokens": False,
                 "has_token": False,
                 "has_api_key": False,
@@ -286,9 +287,7 @@ def test_four_notification_channels_can_be_enabled_together_without_secret_expos
         with client:
             csrf = bootstrap_and_login(client)
             configurations = {
-                "server_chan": {
-                    "webhook_url": "https://notify.example.test/server-private-token"
-                },
+                "server_chan": {"webhook_url": "https://notify.example.test/server-private-token"},
                 "qmsg": {"webhook_url": "https://notify.example.test/qmsg-private-token"},
                 "bark": {"webhook_url": "https://notify.example.test/bark-private-token"},
                 "telegram": {
@@ -583,8 +582,8 @@ def test_notification_test_sanitizes_provider_failures() -> None:
         failing = _RecordingSender(
             error=NotificationHTTPError(NotificationChannel.BARK, 502),
         )
-        app.dependency_overrides[get_notification_sender_builder] = (
-            lambda: lambda _configuration, _session: failing
+        app.dependency_overrides[get_notification_sender_builder] = lambda: (
+            lambda _configuration, _session: failing
         )
         with client:
             csrf = bootstrap_and_login(client)
@@ -613,8 +612,8 @@ def test_answer_test_runs_sample_question_against_enabled_provider() -> None:
                 questions.append(question)
                 return "A. 北京"
 
-        app.dependency_overrides[get_answer_provider_builder] = (
-            lambda: lambda _configuration, _session: _Provider()
+        app.dependency_overrides[get_answer_provider_builder] = lambda: (
+            lambda _configuration, _session: _Provider()
         )
         with client:
             csrf = bootstrap_and_login(client)
@@ -647,8 +646,8 @@ def test_answer_test_reports_failures_without_exception_text() -> None:
             def answer(self, question: QuizQuestion, *, course_context: str = "") -> str:
                 raise PlatformHTTPError("secret-bearing upstream message", status_code=401)
 
-        app.dependency_overrides[get_answer_provider_builder] = (
-            lambda: lambda _configuration, _session: _Provider()
+        app.dependency_overrides[get_answer_provider_builder] = lambda: (
+            lambda _configuration, _session: _Provider()
         )
         with client:
             csrf = bootstrap_and_login(client)
@@ -716,6 +715,122 @@ def test_openai_compatible_custom_headers_roundtrip_and_are_hidden_from_users() 
                 "x-opencode-session": "routing-session-1",
                 "X-Team-Tag": "console",
             }
+
+
+def test_opencode_headers_are_generated_for_fresh_api_clients_and_stay_stable() -> None:
+    sessions: list[str] = []
+    for _ in range(2):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app, client = make_client(temp_dir)
+            with client:
+                csrf = bootstrap_and_login(client)
+                path = "/api/v1/settings/integrations/answer"
+                response = client.patch(
+                    path,
+                    headers={"X-CSRF-Token": csrf},
+                    json={
+                        "provider": "openai_compatible",
+                        "base_url": "https://opencode.ai/zen/go/v1",
+                        "model": "model",
+                        "api_key": "test-secret",
+                        "enabled": True,
+                    },
+                )
+                assert response.status_code == 200, response.text
+                body = response.json()
+                headers = body["config"]["headers"]
+                session_id = headers["x-opencode-session"]
+                assert UUID(session_id).version == 4
+                assert headers["User-Agent"] == "chaoxing-app/0.1"
+                sessions.append(session_id)
+                assert client.get(path).json()["config"]["headers"] == headers
+                updated = client.patch(
+                    path,
+                    headers={"X-CSRF-Token": csrf},
+                    json={
+                        "expected_revision": body["revision"],
+                        "headers": {},
+                    },
+                )
+                assert updated.status_code == 200
+                assert updated.json()["config"]["headers"] == headers
+                assert updated.json()["revision"] == body["revision"]
+                from chaoxing_app.infrastructure.db.integrations import IntegrationSettingRepository
+
+                repository = IntegrationSettingRepository(secret_box=app.state.secret_box)
+                with Session(app.state.engine) as db:
+                    runtime = repository.answer_runtime_configuration(
+                        db,
+                        expected_revision=body["revision"],
+                    )
+                assert runtime is not None and runtime.headers == headers
+    assert sessions[0] != sessions[1]
+
+
+def test_opencode_automatic_headers_preserve_custom_case_and_fill_blank_values() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        _app, client = make_client(temp_dir)
+        with client:
+            csrf = bootstrap_and_login(client)
+            path = "/api/v1/settings/integrations/answer"
+            response = client.patch(
+                path,
+                headers={"X-CSRF-Token": csrf},
+                json={
+                    "provider": "openai_compatible",
+                    "base_url": "https://opencode.ai/zen/go/v1",
+                    "model": "model",
+                    "headers": {
+                        "X-OpenCode-Session": "my-existing-session",
+                        "user-agent": "my-client/2",
+                        "X-Team": "custom",
+                    },
+                },
+            )
+            assert response.status_code == 200
+            assert response.json()["config"]["headers"] == {
+                "X-OpenCode-Session": "my-existing-session",
+                "user-agent": "my-client/2",
+                "X-Team": "custom",
+            }
+            response = client.patch(
+                path,
+                headers={"X-CSRF-Token": csrf},
+                json={
+                    "headers": {"X-OpenCode-Session": "  ", "user-agent": ""},
+                },
+            )
+            assert response.status_code == 200
+            assert response.json()["config"]["headers"] == {
+                "X-OpenCode-Session": "my-existing-session",
+                "user-agent": "my-client/2",
+            }
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "https://llm.example.test/v1",
+        "https://opencode.ai.example.test/zen/go/v1",
+        "https://notopencode.ai/zen/go/v1",
+    ],
+)
+def test_other_providers_do_not_get_opencode_headers(base_url: str) -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        _app, client = make_client(temp_dir)
+        with client:
+            csrf = bootstrap_and_login(client)
+            response = client.patch(
+                "/api/v1/settings/integrations/answer",
+                headers={"X-CSRF-Token": csrf},
+                json={
+                    "provider": "openai_compatible",
+                    "base_url": base_url,
+                    "model": "model",
+                },
+            )
+            assert response.status_code == 200
+            assert response.json()["config"]["headers"] == {}
 
 
 def test_provider_headers_reject_invalid_names_values_and_foreign_providers() -> None:

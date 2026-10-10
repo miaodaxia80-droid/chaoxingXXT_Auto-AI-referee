@@ -42,6 +42,10 @@ _SAFE_REASONS = frozenset(
         "platform_response_invalid",
         "platform_completion_rejected",
         "platform_request_failed",
+        "platform_request_timeout",
+        "platform_http_error",
+        "media_completion_unverified",
+        "answer_provider_failed",
         "internal_execution_error",
     }
 )

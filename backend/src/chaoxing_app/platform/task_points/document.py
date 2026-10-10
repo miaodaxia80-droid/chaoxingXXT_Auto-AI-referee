@@ -32,6 +32,7 @@ class DocumentCompletionResult:
     accepted: bool
     status_code: int
     knowledge_id: str
+    reason: str = ""
 
 
 class DocumentTaskClient(TaskPointHTTPClient):
@@ -83,4 +84,10 @@ class DocumentTaskClient(TaskPointHTTPClient):
             accepted=payload.get("status") is True,
             status_code=response.status_code,
             knowledge_id=knowledge_id,
+            reason=(
+                "invalid_parameters"
+                if payload.get("status") is not True
+                and payload.get("msg") in {"无效的请求参数", "illegal params"}
+                else ""
+            ),
         )

@@ -60,7 +60,11 @@ from chaoxing_app.worker.control import (
     TaskPauseRequested,
     WorkerControl,
 )
-from chaoxing_app.worker.media_playback import PlaybackResult, ProgressCallback
+from chaoxing_app.worker.media_playback import (
+    MediaCompletionError,
+    PlaybackResult,
+    ProgressCallback,
+)
 from chaoxing_app.worker.study_executor import StudyTaskExecutor
 from chaoxing_app.worker.task_progress import ClaimedTaskProgress
 
@@ -119,9 +123,7 @@ class StubChapterClient:
     bundles: Mapping[str, ChapterTaskBundle]
     error: Exception | None = None
     calls: list[str] = field(default_factory=list)
-    verify_bundles: (
-        Mapping[str, ChapterTaskBundle | tuple[ChapterTaskBundle, ...]] | None
-    ) = None
+    verify_bundles: Mapping[str, ChapterTaskBundle | tuple[ChapterTaskBundle, ...]] | None = None
     _fetch_counts: dict[str, int] = field(default_factory=dict)
 
     def fetch(self, _course: Course, chapter: Chapter) -> ChapterTaskBundle:
@@ -141,8 +143,11 @@ class StubChapterClient:
         # job marker dropped the page reports no pending tasks left.
         bundle = self.bundles[chapter.chapter_id]
         return ChapterTaskBundle(
-            (), bundle.defaults, False,
-            bundle.attachment_count, bundle.attachment_count,
+            (),
+            bundle.defaults,
+            False,
+            bundle.attachment_count,
+            bundle.attachment_count,
         )
 
 
@@ -186,9 +191,7 @@ class StubAnswerProvider:
     error: Exception | None = None
     questions: list[QuizQuestion] = field(default_factory=list)
 
-    def answer(
-        self, question: QuizQuestion, *, course_context: str = ""
-    ) -> object:
+    def answer(self, question: QuizQuestion, *, course_context: str = "") -> object:
         self.questions.append(question)
         if self.error is not None:
             raise self.error
@@ -464,9 +467,7 @@ def run_executor(
     course_error: Exception | None = None,
     post_outline: CourseOutline | None = None,
 ) -> tuple[TaskStatus, StubAccountSession]:
-    account = StubAccountSession(
-        StubCourseClient(outline, course_error, post_outline=post_outline)
-    )
+    account = StubAccountSession(StubCourseClient(outline, course_error, post_outline=post_outline))
     runtime = StubAccountRuntime(account)
     executor = harness.executor(engine=database.engine, runtime=runtime)
     status = executor.execute(
@@ -702,9 +703,7 @@ def test_discussion_point_uses_ai_reply_when_provider_available(tmp_path: Path) 
     )
     provider = StubAnswerProvider()
     harness = ExecutorHarness(StubChapterClient({"discuss": bundle(discussion)}))
-    harness.answer_runtime.binding = AnswerProviderBinding(
-        provider=provider, unavailable_reason=""
-    )
+    harness.answer_runtime.binding = AnswerProviderBinding(provider=provider, unavailable_reason="")
 
     status, _account = run_executor(
         database,
@@ -771,9 +770,7 @@ def test_discussion_pending_review_and_rejection_are_reported(tmp_path: Path) ->
     )
     runtime = StubAccountRuntime(
         StubAccountSession(
-            StubCourseClient(
-                CourseOutline((chapter("pending"), chapter("rejected")))
-            )
+            StubCourseClient(CourseOutline((chapter("pending"), chapter("rejected"))))
         )
     )
     executor = StudyTaskExecutor(
@@ -816,16 +813,12 @@ def test_discussion_min_length_rejection_retries_with_longer_reply(
     )
     discussion_client = StubDiscussionClient(
         results=[
-            DiscussionReplyResult(
-                DiscussionReplyStatus.REJECTED, 200, "该话题至少回复200字"
-            ),
+            DiscussionReplyResult(DiscussionReplyStatus.REJECTED, 200, "该话题至少回复200字"),
             DiscussionReplyResult(DiscussionReplyStatus.POSTED, 200, "回复发表成功"),
         ]
     )
     harness = ExecutorHarness(
-        StubChapterClient(
-            {"discuss": bundle(DiscussionTaskPoint("job-1", "mid-1", "info"))}
-        )
+        StubChapterClient({"discuss": bundle(DiscussionTaskPoint("job-1", "mid-1", "info"))})
     )
     harness.discussion_client = discussion_client
 
@@ -851,8 +844,11 @@ def test_completion_verified_after_pending_marker_clears(tmp_path: Path) -> None
     document = DocumentTaskPoint("doc-job", "object-2", "nodeId_doc", "jtoken")
     pending_bundle = bundle(document)
     cleared_bundle = ChapterTaskBundle(
-        (), pending_bundle.defaults, False,
-        pending_bundle.attachment_count, pending_bundle.attachment_count,
+        (),
+        pending_bundle.defaults,
+        False,
+        pending_bundle.attachment_count,
+        pending_bundle.attachment_count,
     )
     harness = ExecutorHarness(
         StubChapterClient(
@@ -976,6 +972,23 @@ def test_platform_failures_are_persisted_without_exception_text(tmp_path: Path) 
     assert "hunter2" not in persisted
 
 
+def test_media_rejection_is_not_reported_as_a_network_failure(tmp_path: Path) -> None:
+    database = make_task_database(tmp_path, [("one", ChapterStatus.PENDING)])
+    harness = ExecutorHarness(StubChapterClient({}, MediaCompletionError("private details")))
+    status, _account = run_executor(database, CourseOutline((chapter("one"),)), harness)
+    assert status is TaskStatus.NEEDS_ATTENTION
+    assert load_chapters(database.engine, database.task_id)["one"].last_error == (
+        "media_completion_unverified"
+    )
+    failed = next(
+        event
+        for event in load_events(database.engine, database.task_id)
+        if event.kind == "chapter.failed"
+    )
+    assert failed.payload["exception_type"] == "MediaCompletionError"
+    assert "private details" not in repr(failed.payload)
+
+
 def test_outline_authentication_failure_is_fatal_and_leaves_chapters_runnable(
     tmp_path: Path,
 ) -> None:
@@ -1048,9 +1061,7 @@ def test_missing_card_payload_with_declared_job_cannot_be_marked_empty(tmp_path:
     # 空卡片页 + 声明任务点: 先打访问上报, 再按大纲状态复核——
     # 平台仍未确认时不能算完成.
     database = make_task_database(tmp_path, [("one", ChapterStatus.PENDING)])
-    harness = ExecutorHarness(
-        StubChapterClient({"one": ChapterTaskBundle((), None, False, 0, 0)})
-    )
+    harness = ExecutorHarness(StubChapterClient({"one": ChapterTaskBundle((), None, False, 0, 0)}))
 
     status, _account = run_executor(
         database,
@@ -1069,9 +1080,7 @@ def test_empty_card_page_visit_ping_completes_when_outline_confirms(tmp_path: Pa
     # 有的章节任务不在卡片里 (访问/阅读型隐藏任务点) —— 访问上报后大纲
     # 变为已完成才算真正完成.
     database = make_task_database(tmp_path, [("one", ChapterStatus.PENDING)])
-    harness = ExecutorHarness(
-        StubChapterClient({"one": ChapterTaskBundle((), None, False, 0, 0)})
-    )
+    harness = ExecutorHarness(StubChapterClient({"one": ChapterTaskBundle((), None, False, 0, 0)}))
 
     status, _account = run_executor(
         database,

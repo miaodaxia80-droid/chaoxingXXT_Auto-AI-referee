@@ -22,7 +22,9 @@ from chaoxing_app.platform.client import ChaoxingClient
 from chaoxing_app.platform.errors import (
     PlatformAuthenticationError,
     PlatformError,
+    PlatformHTTPError,
     PlatformParseError,
+    PlatformTimeoutError,
 )
 from chaoxing_app.platform.models import Chapter, Course, CourseOutline
 from chaoxing_app.platform.task_points.cards import (
@@ -71,6 +73,7 @@ from chaoxing_app.worker.control import (
     WorkerControl,
 )
 from chaoxing_app.worker.media_playback import (
+    MediaCompletionError,
     MediaPlaybackRunner,
     MediaProgressPort,
     PlaybackResult,
@@ -257,9 +260,19 @@ def _default_reply_content(min_length: int) -> str:
 
 
 class TaskPointRejected(PlatformError):
-    def __init__(self, detail: str = "") -> None:
+    def __init__(
+        self,
+        detail: str = "",
+        *,
+        task_type: str = "",
+        status_code: int | None = None,
+        result_reason: str = "",
+    ) -> None:
         super().__init__(detail or "platform rejected the completion request")
         self.detail = detail
+        self.task_type = task_type
+        self.status_code = status_code
+        self.result_reason = result_reason
 
 
 class StudyTaskExecutor:
@@ -292,9 +305,7 @@ class StudyTaskExecutor:
         self._empty_page_client_factory = empty_page_client_factory
         self._discussion_client_factory = discussion_client_factory
         self._quiz_client_factory = quiz_client_factory
-        self._answer_provider_runtime = (
-            answer_provider_runtime or DisabledAnswerProviderRuntime()
-        )
+        self._answer_provider_runtime = answer_provider_runtime or DisabledAnswerProviderRuntime()
         self._video_client_factory = video_client_factory
         self._playback_factory = playback_factory
 
@@ -559,6 +570,7 @@ class StudyTaskExecutor:
                     chapter_id,
                     status=ChapterStatus.FAILED,
                     reason=self._safe_failure_reason(exc),
+                    payload=self._failure_details(exc),
                 )
             except TaskLeaseLost:
                 if not fatal:
@@ -658,6 +670,7 @@ class StudyTaskExecutor:
                 chapter.chapter_id,
                 status=ChapterStatus.FAILED,
                 reason=self._safe_failure_reason(exc),
+                payload=self._failure_details(exc),
             )
             if isinstance(exc, (AccountRuntimeError, PlatformAuthenticationError)):
                 raise
@@ -720,8 +733,7 @@ class StudyTaskExecutor:
         progress: ClaimedTaskProgress,
     ) -> None:
         if bundle.attachment_count and (
-            bundle.completed_attachment_count
-            >= max(bundle.attachment_count, chapter.job_count)
+            bundle.completed_attachment_count >= max(bundle.attachment_count, chapter.job_count)
         ):
             progress.finish_chapter(
                 chapter.chapter_id,
@@ -767,11 +779,7 @@ class StudyTaskExecutor:
                 control,
             )
             current = next(
-                (
-                    item
-                    for item in verified.chapters
-                    if item.chapter_id == chapter.chapter_id
-                ),
+                (item for item in verified.chapters if item.chapter_id == chapter.chapter_id),
                 None,
             )
             if current is None or not current.is_completed:
@@ -828,7 +836,7 @@ class StudyTaskExecutor:
             control.checkpoint()
             if isinstance(task_point, QuizTaskPoint):
                 binding = answer_binding or AnswerProviderBinding()
-                quiz_attention = self._run_quiz(
+                quiz_attention, quiz_reason = self._run_quiz(
                     snapshot=snapshot,
                     course=course,
                     chapter=chapter,
@@ -841,6 +849,7 @@ class StudyTaskExecutor:
                 )
                 if quiz_attention is not None and attention is None:
                     attention = quiz_attention
+                    attention_reason = quiz_reason
                 continue
             if isinstance(task_point, UnsupportedTaskPoint):
                 progress.record_event(
@@ -915,7 +924,7 @@ class StudyTaskExecutor:
         control: WorkerControl,
         progress: ClaimedTaskProgress,
         answer_binding: AnswerProviderBinding,
-    ) -> ChapterStatus | None:
+    ) -> tuple[ChapterStatus | None, str | None]:
         client = self._quiz_client_factory(account.session)
         result = self._authenticated(
             account,
@@ -942,6 +951,8 @@ class StudyTaskExecutor:
                 "coverage": round(result.coverage, 4),
                 "provider_error_count": result.provider_error_count,
                 "provider_result_reason": result.reason,
+                "provider_failure_reason": result.provider_failure_reason,
+                "provider_status_code": result.provider_status_code,
                 "reason": (
                     answer_binding.unavailable_reason
                     if answer_binding.unavailable_reason
@@ -951,10 +962,12 @@ class StudyTaskExecutor:
             },
         )
         if result.status is QuizSubmissionStatus.SUBMITTED:
-            return None
+            return None, None
         if result.status is QuizSubmissionStatus.REJECTED:
             raise TaskPointRejected
-        return ChapterStatus.UNSUBMITTED
+        return ChapterStatus.UNSUBMITTED, (
+            "answer_provider_failed" if result.provider_error_count else "quiz_requires_answers"
+        )
 
     def _run_video(
         self,
@@ -1015,7 +1028,11 @@ class StudyTaskExecutor:
             control,
         )
         if not result.accepted:
-            raise TaskPointRejected
+            raise TaskPointRejected(
+                task_type="document",
+                status_code=result.status_code,
+                result_reason=result.reason,
+            )
         self._record_point_completed(progress, chapter.chapter_id, "document")
 
     def _run_discussion(
@@ -1121,11 +1138,7 @@ class StudyTaskExecutor:
         configured = getattr(provider, "configured", True) if provider is not None else False
         if provider is None or not configured:
             return _default_reply_content(min_length), "default"
-        length_rule = (
-            f"回复正文必须不少于{min_length}字"
-            if min_length > 0
-            else "80字以内"
-        )
+        length_rule = f"回复正文必须不少于{min_length}字" if min_length > 0 else "80字以内"
         prompt_parts = [
             "请针对下面的课堂讨论题写一条中文回复"
             f"({length_rule}, 只要回复正文, 不要称呼、序号和解释):"
@@ -1294,4 +1307,26 @@ class StudyTaskExecutor:
             return "platform_response_invalid"
         if isinstance(exc, TaskPointRejected):
             return "platform_completion_rejected"
+        if isinstance(exc, MediaCompletionError):
+            return "media_completion_unverified"
+        if isinstance(exc, PlatformTimeoutError):
+            return "platform_request_timeout"
+        if isinstance(exc, PlatformHTTPError):
+            return "platform_http_error"
         return "platform_request_failed"
+
+    @staticmethod
+    def _failure_details(exc: Exception) -> dict[str, object]:
+        # Never include str(exc), request URLs or raw upstream response bodies.
+        details: dict[str, object] = {"exception_type": type(exc).__name__}
+        if isinstance(exc, PlatformHTTPError):
+            details["status_code"] = exc.status_code
+        if isinstance(exc, TaskPointRejected):
+            details.update(
+                {
+                    "task_type": exc.task_type,
+                    "status_code": exc.status_code,
+                    "platform_result_reason": exc.result_reason,
+                }
+            )
+        return details

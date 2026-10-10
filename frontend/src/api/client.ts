@@ -170,6 +170,7 @@ const TEST_FAILURE_MESSAGES: Record<string, string> = {
   timeout: '请求超时，请检查网络或服务地址',
   request_failed: '无法连接到服务',
   provider_http_error: '服务返回了错误响应，请检查凭据',
+  provider_session_required: '接口要求会话标识，请在自定义请求头中填写 x-opencode-session',
   provider_failed: '服务调用失败',
   provider_rejected: '服务拒绝了本次请求',
   no_answer: '服务未返回答案',

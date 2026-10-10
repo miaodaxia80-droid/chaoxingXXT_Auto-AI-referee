@@ -41,6 +41,7 @@ import type {
   IntegrationTestResult,
   UpdateAnswerIntegrationInput,
 } from '@/api/types'
+import { createRoutingSessionId } from '@/utils/routingSession'
 
 const emit = defineEmits<{ 'dirty-change': [dirty: boolean] }>()
 
@@ -260,7 +261,7 @@ const isOpenCodeEndpoint = computed(() => {
   }
 })
 
-watch(isOpenCodeEndpoint, (detected) => {
+watch([isOpenCodeEndpoint, () => form.headers], ([detected]) => {
   if (!detected) return
   const exists = form.headers.some(
     (row) => row.name.trim().toLowerCase() === OPENCODE_SESSION_HEADER,
@@ -268,8 +269,11 @@ watch(isOpenCodeEndpoint, (detected) => {
   if (!exists) {
     form.headers.push({
       name: OPENCODE_SESSION_HEADER,
-      value: crypto.randomUUID(),
+      value: createRoutingSessionId(),
     })
+  }
+  if (!form.headers.some((row) => row.name.trim().toLowerCase() === 'user-agent')) {
+    form.headers.push({ name: 'User-Agent', value: 'chaoxing-app/0.1' })
   }
 })
 
@@ -526,7 +530,7 @@ function errorText(error: unknown, fallback: string): string {
                 :bordered="false"
                 class="opencode-note"
               >
-                检测到 OpenCode 服务地址，已自动填入 x-opencode-session 路由头。删除该行即可停用。
+                检测到 OpenCode 服务地址，已自动填入独立会话 ID 和本应用标识。保存时会补齐缺少的必要请求头，已有自定义值保持不变。
               </NAlert>
               <div
                 v-for="(row, index) in form.headers"

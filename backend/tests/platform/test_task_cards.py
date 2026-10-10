@@ -335,6 +335,21 @@ def test_legacy_material_document_stays_material() -> None:
     assert page.material_types == ("document/insertdoc",)
 
 
+def test_standalone_legacy_document_with_authoring_jobid_is_material() -> None:
+    page = parse_task_card_page("""
+    <iframe class="ans-module ans-insertdoc-retract ans-attach-online"
+      data="{&quot;_jobid&quot;:&quot;1589365501031841&quot;}"></iframe>
+    <script>mArg={"attachments":[{
+      "type":"document","jtoken":"redacted", "otherInfo":"nodeId_42",
+      "property":{"module":"insertdoc","_jobid":"1589365501031841",
+        "objectid":"document-object","name":"课件.pdf"}
+    }]};</script>""")
+    assert page.tasks == ()
+    assert page.attachment_count == 0
+    assert page.material_attachment_count == 1
+    assert page.material_types == ("document/insertdoc",)
+
+
 def test_numeric_defaults_and_jobid_are_coerced_to_text() -> None:
     page = parse_task_card_page(
         """<script>mArg={
@@ -376,10 +391,18 @@ def test_client_scans_past_job_count_to_find_pending_cards() -> None:
     # card page (e.g. the 讨论 section after 课件/教案/案例).
     session = StubSession(
         [
-            response("<script>mArg={\"attachments\":[{\"type\":\"document\",\"jobid\":\"d1\",\"property\":{\"module\":\"insertdoc\",\"objectid\":\"o\"}}]};</script>"),
-            response("<script>mArg={\"attachments\":[{\"type\":\"document\",\"jobid\":\"d2\",\"property\":{\"module\":\"insertdoc\",\"objectid\":\"o\"}}]};</script>"),
-            response("<script>mArg={\"attachments\":[{\"job\":true,\"jobid\":\"bbs-1\",\"mid\":\"m-1\",\"property\":{\"module\":\"insertbbs\",\"isJob\":true,\"title\":\"讨论\"}}]};</script>"),
-            response("<script>mArg={\"attachments\":[{\"type\":\"video\",\"jobid\":\"v1\",\"isPassed\":true,\"objectId\":\"o\",\"mid\":\"m\",\"property\":{\"module\":\"insertvideo\"}}]};</script>"),
+            response(
+                '<script>mArg={"attachments":[{"type":"document","jobid":"d1","property":{"module":"insertdoc","objectid":"o"}}]};</script>'
+            ),
+            response(
+                '<script>mArg={"attachments":[{"type":"document","jobid":"d2","property":{"module":"insertdoc","objectid":"o"}}]};</script>'
+            ),
+            response(
+                '<script>mArg={"attachments":[{"job":true,"jobid":"bbs-1","mid":"m-1","property":{"module":"insertbbs","isJob":true,"title":"讨论"}}]};</script>'
+            ),
+            response(
+                '<script>mArg={"attachments":[{"type":"video","jobid":"v1","isPassed":true,"objectId":"o","mid":"m","property":{"module":"insertvideo"}}]};</script>'
+            ),
             response("<html></html>"),
             response("<html></html>"),
         ]
@@ -399,10 +422,14 @@ def test_client_scans_past_empty_pages_until_pending_jobs_found() -> None:
     # card must still be reached while the declared quota is unmet.
     session = StubSession(
         [
-            response("<script>mArg={\"attachments\":[{\"type\":\"document\",\"jobid\":\"d1\",\"property\":{\"module\":\"insertdoc\",\"objectid\":\"o\"}}]};</script>"),
+            response(
+                '<script>mArg={"attachments":[{"type":"document","jobid":"d1","property":{"module":"insertdoc","objectid":"o"}}]};</script>'
+            ),
             response("<html></html>"),
             response("<html></html>"),
-            response("<script>mArg={\"attachments\":[{\"job\":true,\"jobid\":\"bbs-1\",\"mid\":\"m-1\",\"property\":{\"module\":\"insertbbs\",\"isJob\":true,\"title\":\"讨论\"}}]};</script>"),
+            response(
+                '<script>mArg={"attachments":[{"job":true,"jobid":"bbs-1","mid":"m-1","property":{"module":"insertbbs","isJob":true,"title":"讨论"}}]};</script>'
+            ),
             response("<html></html>"),
             response("<html></html>"),
         ]
@@ -420,7 +447,9 @@ def test_client_scans_past_empty_pages_until_pending_jobs_found() -> None:
 def test_client_stops_empty_probe_when_no_jobs_declared() -> None:
     session = StubSession(
         [
-            response("<script>mArg={\"attachments\":[{\"type\":\"document\",\"jobid\":\"d1\",\"property\":{\"module\":\"insertdoc\",\"objectid\":\"o\"}}]};</script>"),
+            response(
+                '<script>mArg={"attachments":[{"type":"document","jobid":"d1","property":{"module":"insertdoc","objectid":"o"}}]};</script>'
+            ),
             response("<html></html>"),
             response("<html></html>"),
         ]
