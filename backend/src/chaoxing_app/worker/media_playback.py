@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
@@ -38,10 +39,41 @@ class MediaProgressPort(Protocol):
         user_id: str,
         playing_time_seconds: int,
         kind: MediaKind,
+        completion_probe: bool = False,
     ) -> ProgressReportResult: ...
 
 
 ProgressCallback = Callable[[str, Mapping[str, object]], None]
+
+
+class MediaReportLimiter:
+    """Share the upstream's two-second report spacing across chapter sessions."""
+
+    def __init__(
+        self,
+        *,
+        monotonic: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> None:
+        self._lock = threading.Lock()
+        self._last: float | None = None
+        self._monotonic = monotonic
+        self._sleep = sleep
+
+    def wait(self, checkpoint: Callable[[], None]) -> None:
+        while not self._lock.acquire(timeout=0.2):
+            checkpoint()
+        try:
+            checkpoint()
+            while self._last is not None:
+                remaining = 2.0 - (self._monotonic() - self._last)
+                if remaining <= 0:
+                    break
+                self._sleep(min(remaining, 0.2))
+                checkpoint()
+            self._last = self._monotonic()
+        finally:
+            self._lock.release()
 
 
 def _ignore_progress(_kind: str, _payload: Mapping[str, object]) -> None:
@@ -82,9 +114,10 @@ class MediaPlaybackRunner:
         sleep: Callable[[float], None] = time.sleep,
         progress: ProgressCallback = _ignore_progress,
         checkpoint_interval_seconds: float = 1.0,
-        final_retry_delay_seconds: float = 2.0,
-        final_report_attempts: int = 3,
+        final_retry_delay_seconds: float = 5.0,
+        final_report_attempts: int = 5,
         forbidden_recovery_attempts: int = 2,
+        completion_probe: bool = True,
     ) -> None:
         if checkpoint_interval_seconds <= 0:
             raise ValueError("checkpoint interval must be positive")
@@ -103,6 +136,7 @@ class MediaPlaybackRunner:
         self._final_retry_delay = final_retry_delay_seconds
         self._final_report_attempts = final_report_attempts
         self._forbidden_recovery_attempts = forbidden_recovery_attempts
+        self._completion_probe = completion_probe
 
     def run(
         self,
@@ -131,6 +165,23 @@ class MediaPlaybackRunner:
         last_reported = int(play_time)
 
         self._control.checkpoint()
+        if self._completion_probe:
+            probe = self._report(
+                course=course, task=task, state=state, fid=fid,
+                user_id=user_id, play_time=duration, completion_probe=True,
+            )
+            report_count += probe.attempts
+            self._progress(
+                f"{state.kind.value.casefold()}.completion_probe",
+                {"is_passed": probe.result.is_passed, "kind": state.kind.value},
+            )
+            if probe.result.is_passed:
+                return PlaybackResult(
+                    state.metadata.duration_seconds, probe.playing_time_seconds,
+                    report_count, state.kind,
+                )
+            # A rejected probe must never advance the local playback clock.
+            self._control.checkpoint()
         initial = self._report(
             course=course,
             task=task,
@@ -243,8 +294,31 @@ class MediaPlaybackRunner:
             event_prefix = state.kind.value.casefold()
             self._progress(
                 f"{event_prefix}.completion_retry",
-                {"attempt": attempt + 1, "kind": state.kind.value},
+                {
+                    "attempt": attempt + 1, "kind": state.kind.value,
+                    "is_passed": outcome.result.is_passed,
+                    "duration": duration, "play_time": outcome.playing_time_seconds,
+                },
             )
+        if state.audio_fallback_allowed and state.kind is MediaKind.VIDEO:
+            self._control.checkpoint()
+            metadata = self._client.fetch_metadata(task, fid=fid, kind=MediaKind.AUDIO)
+            # Explicit video metadata is authoritative; do not reinterpret it.
+            if metadata.kind is not MediaKind.VIDEO:
+                state.metadata = metadata
+                state.kind = MediaKind.AUDIO
+                state.audio_fallback_allowed = False
+                self._progress("audio.fallback", {"reason": "ambiguous_media"})
+                outcome = self._report(
+                    course=course, task=task, state=state, fid=fid,
+                    user_id=user_id, play_time=duration,
+                )
+                report_count += outcome.attempts
+                if outcome.result.is_passed:
+                    return PlaybackResult(
+                        metadata.duration_seconds, outcome.playing_time_seconds,
+                        report_count, state.kind,
+                    )
         raise MediaCompletionError(
             f"media was not accepted after {self._final_report_attempts} final reports"
         )
@@ -258,6 +332,7 @@ class MediaPlaybackRunner:
         fid: str,
         user_id: str,
         play_time: int,
+        completion_probe: bool = False,
     ) -> _ReportOutcome:
         attempts = 0
         while True:
@@ -271,6 +346,7 @@ class MediaPlaybackRunner:
                     user_id=user_id,
                     playing_time_seconds=reported_time,
                     kind=state.kind,
+                    completion_probe=completion_probe,
                 )
             except PlatformHTTPError as exc:
                 if (

@@ -122,6 +122,7 @@ class VideoProgressClient:
         timestamp_ms: Callable[[], int] = _milliseconds_now,
         captcha_solver: CaptchaSolver | None = None,
         captcha_challenge_retries: int = 1,
+        before_report: Callable[[], None] = lambda: None,
     ) -> None:
         if len(timeout) != 2 or any(value <= 0 for value in timeout):
             raise PlatformConfigurationError("request timeouts must be positive")
@@ -141,6 +142,7 @@ class VideoProgressClient:
             tls_verify=tls_verify,
         )
         self._captcha_challenge_retries = captcha_challenge_retries
+        self._before_report = before_report
 
     def fetch_metadata(
         self,
@@ -186,6 +188,7 @@ class VideoProgressClient:
         user_id: str,
         playing_time_seconds: int,
         kind: MediaKind,
+        completion_probe: bool = False,
     ) -> ProgressReportResult:
         signature = compute_progress_signature(
             class_id=course.clazz_id,
@@ -205,11 +208,9 @@ class VideoProgressClient:
             "courseId": course.course_id,
             "jobid": task.job_id,
             "userid": user_id,
-            # Chaoxing distinguishes ordinary heartbeats from the final seek/
-            # completion report.  The player sends isdrag=4 at the end; using
-            # the heartbeat value here can leave a fully watched media point
-            # with isPassed=false.
-            "isdrag": "4" if playing_time_seconds >= metadata.duration_seconds else "3",
+            # Match upstream: explicit initial completion probe=4, normal
+            # playback reports (including the last heartbeat)=3.
+            "isdrag": "4" if completion_probe else "3",
             "view": "pc",
             "enc": signature,
             "dtype": kind.value,
@@ -229,6 +230,8 @@ class VideoProgressClient:
             request_params = {**params, "rt": rt, "_t": self._timestamp_ms()}
             challenge_count = 0
             while True:
+                self._before_report()
+                request_params["_t"] = self._timestamp_ms()
                 try:
                     response = self._session.request(
                         "GET",

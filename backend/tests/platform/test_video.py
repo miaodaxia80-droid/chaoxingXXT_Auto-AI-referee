@@ -190,6 +190,7 @@ def test_final_progress_report_uses_completion_marker() -> None:
         user_id="user-42",
         playing_time_seconds=120,
         kind=MediaKind.VIDEO,
+        completion_probe=True,
     )
 
     assert session.calls[0][2]["params"]["isdrag"] == "4"

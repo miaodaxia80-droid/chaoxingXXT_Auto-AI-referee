@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -746,11 +747,17 @@ class QuizTaskClient(TaskPointHTTPClient):
         mode: QuizSubmissionMode = QuizSubmissionMode.AUTO,
         timeout: RequestTimeout = (5.0, 15.0),
         tls_verify: bool | str = True,
+        fetch_attempts: int = 3,
+        retry_sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         super().__init__(session=session, timeout=timeout, tls_verify=tls_verify)
         self._provider = provider
         self._submit_threshold = self._validate_threshold(submit_threshold)
         self._mode = self._coerce_mode(mode)
+        if not 1 <= fetch_attempts <= 3:
+            raise ValueError("quiz fetch attempts must be between one and three")
+        self._fetch_attempts = fetch_attempts
+        self._retry_sleep = retry_sleep
 
     def fetch(
         self,
@@ -764,18 +771,30 @@ class QuizTaskClient(TaskPointHTTPClient):
         resolved_knowledge_id = knowledge_id or (defaults.knowledge_id if defaults else "")
         resolved_ktoken = ktoken or (defaults.ktoken if defaults else "")
         resolved_cpi = defaults.cpi if defaults else ""
-        response = self._get(
-            _QUIZ_PAGE_URL,
-            operation="quiz question page",
-            params=build_quiz_fetch_params(
-                course,
-                task,
-                knowledge_id=resolved_knowledge_id,
-                ktoken=resolved_ktoken,
-                cpi=resolved_cpi,
-            ),
+        params = build_quiz_fetch_params(
+            course, task, knowledge_id=resolved_knowledge_id,
+            ktoken=resolved_ktoken, cpi=resolved_cpi,
         )
-        return parse_quiz_form(response.text)
+        for attempt in range(self._fetch_attempts):
+            try:
+                response = self._get(
+                    _QUIZ_PAGE_URL, operation="quiz question page", params=params,
+                )
+                if "教师未创建完成该测验" in response.text:
+                    return QuizForm(fields={}, questions=())
+                form = parse_quiz_form(response.text)
+                if form.questions or attempt + 1 == self._fetch_attempts:
+                    return form
+            except (PlatformTimeoutError, PlatformTransportError,
+                    PlatformParseError, PlatformHTTPError) as exc:
+                if isinstance(exc, PlatformHTTPError) and exc.status_code not in {
+                    408, 429, 500, 502, 503, 504,
+                }:
+                    raise
+                if attempt + 1 == self._fetch_attempts:
+                    raise
+            self._retry_sleep(1.0)
+        raise AssertionError("unreachable quiz fetch loop")
 
     fetch_questions = fetch
 

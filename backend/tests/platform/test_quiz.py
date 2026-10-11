@@ -351,3 +351,56 @@ def test_five_provider_capabilities_remain_explicit() -> None:
         AnswerProviderCapability.OPENAI_COMPATIBLE,
         AnswerProviderCapability.SILICONFLOW_ENSEMBLE,
     } == SUPPORTED_PROVIDER_CAPABILITIES
+
+
+@pytest.mark.parametrize("first", [
+    requests.Timeout(), response("temporary", status_code=503),
+    response("invalid"), response({"questions": []}),
+])
+def test_quiz_fetch_recovers_transient_failures(first) -> None:
+    session = StubSession([first, response(QUIZ_HTML)])
+    waits = []
+    form = QuizTaskClient(
+        session=cast(requests.Session, session), retry_sleep=waits.append,
+    ).fetch(course(), quiz_task(), defaults=defaults())
+    assert len(form.questions) == 2
+    assert waits == [1.0]
+    assert [call[0] for call in session.calls] == ["GET", "GET"]
+
+
+def test_quiz_fetch_retry_budget_and_secret_redaction() -> None:
+    from chaoxing_app.platform.errors import PlatformTimeoutError
+
+    session = StubSession([requests.Timeout("private-url-token")] * 3)
+    waits = []
+    with pytest.raises(PlatformTimeoutError) as error:
+        QuizTaskClient(
+            session=cast(requests.Session, session), retry_sleep=waits.append,
+        ).fetch(course(), quiz_task(), defaults=defaults())
+    assert "private-url-token" not in str(error.value)
+    assert len(session.calls) == 3
+    assert waits == [1, 1]
+
+
+@pytest.mark.parametrize("code", [400, 401, 403, 404])
+def test_quiz_fetch_does_not_retry_permanent_rejection(code: int) -> None:
+    from chaoxing_app.platform.errors import PlatformHTTPError
+
+    session = StubSession([response("secret", status_code=code)])
+    with pytest.raises(PlatformHTTPError):
+        QuizTaskClient(session=cast(requests.Session, session)).fetch(
+            course(), quiz_task(), defaults=defaults(),
+        )
+    assert len(session.calls) == 1
+
+
+def test_quiz_submission_timeout_is_not_retried() -> None:
+    from chaoxing_app.platform.errors import PlatformTimeoutError
+
+    session = StubSession([response(QUIZ_HTML), requests.Timeout()])
+    with pytest.raises(PlatformTimeoutError):
+        QuizTaskClient(session=cast(requests.Session, session)).complete(
+            course(), quiz_task(), defaults=defaults(),
+            provider=FixtureProvider({"101": "A", "102": "true"}),
+        )
+    assert [call[0] for call in session.calls] == ["GET", "POST"]

@@ -25,6 +25,7 @@ from chaoxing_app.platform.errors import (
     PlatformHTTPError,
     PlatformParseError,
     PlatformTimeoutError,
+    PlatformTransportError,
 )
 from chaoxing_app.platform.models import Chapter, Course, CourseOutline
 from chaoxing_app.platform.task_points.cards import (
@@ -76,6 +77,7 @@ from chaoxing_app.worker.media_playback import (
     MediaCompletionError,
     MediaPlaybackRunner,
     MediaProgressPort,
+    MediaReportLimiter,
     PlaybackResult,
     ProgressCallback,
 )
@@ -292,11 +294,18 @@ class StudyTaskExecutor:
         playback_factory: PlaybackFactory = _playback_runner,
         verify_delay_seconds: float = 2.5,
         verify_max_attempts: int = 3,
+        media_recovery_attempts: int = 5,
+        media_recovery_delay_seconds: float = 2.0,
     ) -> None:
         if verify_delay_seconds < 0 or verify_max_attempts < 1:
             raise ValueError("verification polling must be non-negative")
         self._verify_delay_seconds = verify_delay_seconds
         self._verify_max_attempts = verify_max_attempts
+        if not 1 <= media_recovery_attempts <= 5 or media_recovery_delay_seconds < 0:
+            raise ValueError("invalid media recovery policy")
+        self._media_recovery_attempts = media_recovery_attempts
+        self._media_recovery_delay = media_recovery_delay_seconds
+        self._media_report_limiter = MediaReportLimiter()
         self._engine = engine
         self._account_runtime = account_runtime
         self._chapter_client_factory = chapter_client_factory
@@ -981,7 +990,97 @@ class StudyTaskExecutor:
         control: WorkerControl,
         progress: ClaimedTaskProgress,
     ) -> None:
-        video_client = self._video_client_factory(account.session)
+        # Retry media only; never replay quizzes/discussions already submitted.
+        for attempt in range(self._media_recovery_attempts):
+            try:
+                self._run_video_once(
+                    snapshot=snapshot, course=course, chapter=chapter,
+                    bundle=bundle, task_point=task_point, account=account,
+                    control=control, progress=progress, kind_override=None,
+                )
+                return
+            except (MediaCompletionError, PlatformTimeoutError, PlatformTransportError,
+                    PlatformHTTPError) as exc:
+                retryable = not isinstance(exc, PlatformHTTPError) or exc.status_code in {
+                    408, 429, 500, 502, 503, 504,
+                }
+                if attempt + 1 >= self._media_recovery_attempts:
+                    if task_point.kind is MediaKind.VIDEO:
+                        try:
+                            self._run_video_once(
+                                snapshot=snapshot, course=course, chapter=chapter,
+                                bundle=bundle, task_point=task_point, account=account,
+                                control=control, progress=progress,
+                                kind_override=MediaKind.AUDIO,
+                            )
+                            return
+                        except PlatformError:
+                            pass
+                    if not retryable:
+                        raise
+                    raise
+                if not retryable:
+                    raise
+                progress.record_event(
+                    chapter.chapter_id, kind="chapter.video.recovery",
+                    payload={"attempt": attempt + 2, "reason": self._safe_failure_reason(exc)},
+                )
+                deadline = time.monotonic() + self._media_recovery_delay
+                while time.monotonic() < deadline:
+                    control.checkpoint()
+                    time.sleep(min(0.2, max(deadline - time.monotonic(), 0)))
+                control.checkpoint()
+                client = self._chapter_client_factory(account.session)
+
+                def fetch_fresh(
+                    _active: ChaoxingClient,
+                    chapter_client: ChapterTaskPort = client,
+                ) -> ChapterTaskBundle:
+                    return chapter_client.fetch(course, chapter)
+
+                fresh = self._authenticated(account, fetch_fresh, control)
+                if fresh.not_open:
+                    raise
+                pending = next((
+                    item for item in fresh.tasks
+                    if isinstance(item, VideoTaskPoint) and item.job_id == task_point.job_id
+                ), None)
+                if pending is None:
+                    # Missing cards alone are not evidence of completion.
+                    outline = self._authenticated(
+                        account, lambda active: active.get_course_outline(course), control,
+                    )
+                    if any(c.chapter_id == chapter.chapter_id and c.is_completed
+                           for c in outline.chapters):
+                        self._record_point_completed(progress, chapter.chapter_id, "video")
+                        return
+                    raise
+                task_point, bundle = pending, fresh
+
+    def _run_video_once(
+        self,
+        *,
+        snapshot: TaskExecutionSnapshot,
+        course: Course,
+        chapter: Chapter,
+        bundle: ChapterTaskBundle,
+        task_point: VideoTaskPoint,
+        account: AccountStudySession,
+        control: WorkerControl,
+        progress: ClaimedTaskProgress,
+        kind_override: MediaKind | None,
+    ) -> None:
+        def before_report() -> None:
+            self._media_report_limiter.wait(control.checkpoint)
+
+        video_client = (
+            VideoProgressClient(
+                session=account.session,
+                before_report=before_report,
+            )
+            if self._video_client_factory is _video_client
+            else self._video_client_factory(account.session)
+        )
 
         def record(kind: str, payload: Mapping[str, object]) -> None:
             progress.record_event(
@@ -1000,7 +1099,7 @@ class StudyTaskExecutor:
                 fid=account.fid,
                 user_id=account.user_id,
                 speed=self._speed(snapshot.config),
-                kind=task_point.kind,
+                kind=kind_override or task_point.kind,
                 report_interval_seconds=report_interval,
             ),
             control,

@@ -68,6 +68,7 @@ class FakeMediaClient:
         user_id: str,
         playing_time_seconds: int,
         kind: MediaKind,
+        completion_probe: bool = False,
     ) -> ProgressReportResult:
         assert course.course_id == "course-1"
         assert task.job_id == "job-1"
@@ -110,6 +111,7 @@ class ScriptedMediaClient:
         user_id: str,
         playing_time_seconds: int,
         kind: MediaKind,
+        completion_probe: bool = False,
     ) -> ProgressReportResult:
         assert course.course_id == "course-1"
         assert task.job_id == "job-1"
@@ -146,6 +148,7 @@ def runner(client: FakeMediaClient, clock: FakeClock, control: FakeControl):
         checkpoint_interval_seconds=1,
         final_retry_delay_seconds=2,
         final_report_attempts=3,
+        completion_probe=False,
     )
     return instance, events
 
@@ -421,6 +424,62 @@ def test_final_report_retries_are_bounded() -> None:
     assert client.reports == [0, 2, 2, 2]
     assert sum(clock.sleeps) == 6.0
     assert [kind for kind, _payload in events].count("video.completion_retry") == 2
+
+
+@pytest.mark.parametrize("passed", [False, True])
+def test_completion_probe_does_not_advance_rejected_progress(passed: bool) -> None:
+    client = FakeMediaClient(duration=10, pass_on_report=1 if passed else 4)
+    clock = FakeClock()
+    events = []
+    playback = MediaPlaybackRunner(
+        client=client, control=FakeControl(),  # type: ignore[arg-type]
+        monotonic=clock.monotonic, sleep=clock.sleep,
+        progress=lambda kind, payload: events.append((kind, dict(payload))),
+    )
+    result = playback.run(
+        course=course(), task=task(), fid="fid-1", user_id="user-1",
+        speed=1.0, kind=MediaKind.VIDEO, report_interval_seconds=5,
+    )
+    assert client.reports == ([10] if passed else [10, 0, 5, 10])
+    assert clock.value == (0 if passed else 10)
+    assert events[0][0] == "video.completion_probe"
+    assert events[0][1]["is_passed"] is passed
+    assert result.final_play_time_seconds == 10
+
+
+def test_final_failure_tries_audio_only_for_ambiguous_media() -> None:
+    client = ScriptedMediaClient(
+        metadata_results=[MediaMetadata("video-token", 2), MediaMetadata("audio-token", 2)],
+        report_results=[ProgressReportResult(False, "1")] * 4 + [ProgressReportResult(True, "1")],
+    )
+    playback, events = runner(client, FakeClock(), FakeControl())  # type: ignore[arg-type]
+    result = playback.run(
+        course=course(), task=task(allow_audio_fallback=True), fid="fid-1", user_id="user-1",
+        speed=1.0, kind=MediaKind.VIDEO, report_interval_seconds=60,
+    )
+    assert client.fetch_kinds == [MediaKind.VIDEO, MediaKind.AUDIO]
+    assert result.kind is MediaKind.AUDIO
+    assert client.reports[-1][:2] == (MediaKind.AUDIO, 2)
+    assert any(kind == "audio.fallback" for kind, _ in events)
+
+
+def test_shared_report_limiter_is_cancellable_and_releases_lock() -> None:
+    from chaoxing_app.worker.control import TaskPauseRequested
+    from chaoxing_app.worker.media_playback import MediaReportLimiter
+
+    clock = FakeClock()
+    limiter = MediaReportLimiter(monotonic=clock.monotonic, sleep=clock.sleep)
+    limiter.wait(lambda: None)
+
+    def paused() -> None:
+        raise TaskPauseRequested
+
+    with pytest.raises(TaskPauseRequested):
+        limiter.wait(paused)
+    limiter.wait(lambda: None)
+    assert clock.value == pytest.approx(2)
+    limiter.wait(lambda: None)
+    assert clock.value == pytest.approx(4)
 
 
 @pytest.mark.parametrize("speed", [0.9, 2.1])
