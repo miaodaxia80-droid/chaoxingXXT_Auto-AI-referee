@@ -205,7 +205,11 @@ class VideoProgressClient:
             "courseId": course.course_id,
             "jobid": task.job_id,
             "userid": user_id,
-            "isdrag": "3",
+            # Chaoxing distinguishes ordinary heartbeats from the final seek/
+            # completion report.  The player sends isdrag=4 at the end; using
+            # the heartbeat value here can leave a fully watched media point
+            # with isPassed=false.
+            "isdrag": "4" if playing_time_seconds >= metadata.duration_seconds else "3",
             "view": "pc",
             "enc": signature,
             "dtype": kind.value,

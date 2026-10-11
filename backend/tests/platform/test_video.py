@@ -171,11 +171,28 @@ def test_reports_progress_and_includes_optional_attention_fields() -> None:
     assert result.rt == "0.9"
     params = session.calls[0][2]["params"]
     assert params["enc"] == "b930b1e3c5bff0de8e097c682df119ed"
+    assert params["isdrag"] == "3"
     assert params["videoFaceCaptureEnc"] == "face-enc"
     assert params["attDuration"] == "30"
     assert params["attDurationEnc"] == "attention-enc"
     assert params["_t"] == 1_700_000_000_000
     assert session.calls[0][2]["verify"] is True
+
+
+def test_final_progress_report_uses_completion_marker() -> None:
+    session = StubSession([response({"isPassed": False})])
+    client = VideoProgressClient(session=cast(requests.Session, session))
+
+    client.report_progress(
+        course=fixture_course(),
+        task=fixture_task(),
+        metadata=MediaMetadata(dtoken="dtoken-1", duration_seconds=120),
+        user_id="user-42",
+        playing_time_seconds=120,
+        kind=MediaKind.VIDEO,
+    )
+
+    assert session.calls[0][2]["params"]["isdrag"] == "4"
 
 
 def test_unknown_rt_retries_only_for_403_and_tls_cannot_be_disabled() -> None:
