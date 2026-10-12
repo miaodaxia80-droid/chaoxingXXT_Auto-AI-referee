@@ -21,11 +21,9 @@ services:
       CX_ALLOWED_CLIENT_NETWORKS: '["192.0.2.0/24", "100.64.0.0/10", "fd00:1234:5678::/48"]'
       CX_WORKER_MAX_WORKERS: "2"
       # requests/urllib 自动读取这三个变量：
-      # 超星对云机房 IP 有 403 风控，故出站统一走内网 Library(192.0.2.126) 的
-      # tinyproxy（仅允许 Tailnet 网段访问），出口为其家宽住宅 IP。
-      # 备选方案：若 Library 关机，可把下面两行改回 http://127.0.0.1:10809 用本机 xray。
-      HTTP_PROXY: "http://100.64.0.11:10811"
-      HTTPS_PROXY: "http://100.64.0.11:10811"
+      # 超星出站使用宿主机本地 xray，避免依赖已离线的远端 Tailscale 代理节点。
+      HTTP_PROXY: "http://127.0.0.1:10809"
+      HTTPS_PROXY: "http://127.0.0.1:10809"
       NO_PROXY: "127.0.0.1,localhost"
     # 防火墙与应用层同时限制 5002；主机防火墙配置见 deploy/
     command: ["sh", "-c", "python -m alembic upgrade head && exec chaoxing-app serve --host 0.0.0.0 --port 5002"]
