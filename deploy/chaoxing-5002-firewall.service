@@ -1,0 +1,14 @@
+[Unit]
+Description=Restrict Chaoxing console port to LAN and Tailscale
+After=network-online.target tailscaled.service docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStartPre=-/usr/sbin/nft delete table inet chaoxing_access
+ExecStart=/usr/sbin/nft -f /etc/chaoxing/chaoxing-5002.nft
+ExecStop=-/usr/sbin/nft delete table inet chaoxing_access
+
+[Install]
+WantedBy=multi-user.target

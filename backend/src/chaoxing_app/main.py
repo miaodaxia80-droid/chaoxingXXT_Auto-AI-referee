@@ -2,6 +2,7 @@ import secrets
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import timedelta
+from ipaddress import ip_address, ip_network
 
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
@@ -177,6 +178,36 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
         openapi_url=f"{settings.api_prefix}/openapi.json",
     )
     app.state.settings = settings
+
+    allowed_client_networks = tuple(
+        ip_network(value) for value in settings.allowed_client_networks
+    )
+
+    @app.middleware("http")
+    async def restrict_client_networks(request: Request, call_next):
+        if not allowed_client_networks:
+            return await call_next(request)
+        client = request.client
+        try:
+            client_ip = ip_address(client.host) if client is not None else None
+        except ValueError:
+            client_ip = None
+        is_local_healthcheck = (
+            client_ip is not None
+            and client_ip.is_loopback
+            and request.url.path == f"{settings.api_prefix}/health"
+        )
+        is_allowed_network = client_ip is not None and any(
+            client_ip.version == network.version and client_ip in network
+            for network in allowed_client_networks
+        )
+        if not (is_local_healthcheck or is_allowed_network):
+            return JSONResponse(
+                status_code=status.HTTP_403_FORBIDDEN,
+                content={"detail": "client network is not allowed"},
+            )
+        return await call_next(request)
+
     app.add_exception_handler(RequestValidationError, sanitized_validation_error_response)
     app.include_router(router, prefix=settings.api_prefix)
     if settings.frontend_dir is not None:

@@ -1,4 +1,5 @@
 from functools import lru_cache
+from ipaddress import ip_network
 from pathlib import Path
 from typing import Self
 from urllib.parse import urlsplit
@@ -48,6 +49,7 @@ class AppSettings(BaseSettings):
     session_cookie_name: str = "cx_session"
     session_ttl_seconds: int = Field(default=86_400, ge=300)
     allowed_origins: tuple[str, ...] = ()
+    allowed_client_networks: tuple[str, ...] = ()
     login_rate_limit_max_failures: int = Field(default=5, ge=2, le=100)
     login_rate_limit_window_seconds: int = Field(default=300, ge=1, le=86_400)
     login_rate_limit_block_seconds: int = Field(default=900, ge=1, le=86_400)
@@ -100,6 +102,19 @@ class AppSettings(BaseSettings):
                 raise ValueError(f"invalid HTTP origin: {value!r}")
             if origin not in normalized:
                 normalized.append(origin)
+        return tuple(normalized)
+
+    @field_validator("allowed_client_networks")
+    @classmethod
+    def validate_allowed_client_networks(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        normalized: list[str] = []
+        for value in values:
+            try:
+                network = str(ip_network(value.strip(), strict=False))
+            except ValueError:
+                raise ValueError(f"invalid client network: {value!r}") from None
+            if network not in normalized:
+                normalized.append(network)
         return tuple(normalized)
 
     @field_validator("egress_proxies", mode="before")

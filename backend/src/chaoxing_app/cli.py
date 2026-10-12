@@ -103,10 +103,10 @@ def run(argv: Sequence[str] | None = None) -> int:
             host=args.host,
             port=args.port,
             reload=args.reload,
-            # Service binds loopback only: the peer is always Caddy/cloudflared
-            # (127.0.0.1). Trust its X-Forwarded-For to restore the real client
-            # IP (the rate limiters key on it).
+            # Trust forwarded client addresses only from local or Tailscale
+            # reverse proxies; direct LAN/Tailscale clients keep their socket IP.
             proxy_headers=True,
+            forwarded_allow_ips="127.0.0.1,100.64.0.0/10",
         )
         return 0
 

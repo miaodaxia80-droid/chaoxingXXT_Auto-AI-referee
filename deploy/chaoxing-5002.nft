@@ -1,0 +1,11 @@
+table inet chaoxing_access {
+    chain input {
+        type filter hook input priority -100; policy accept;
+
+        iifname "lo" tcp dport 5002 accept
+        ip saddr 192.0.2.0/24 tcp dport 5002 accept
+        ip saddr 100.64.0.0/10 tcp dport 5002 accept
+        ip6 saddr fd00:1234:5678::/48 tcp dport 5002 accept
+        tcp dport 5002 drop
+    }
+}
