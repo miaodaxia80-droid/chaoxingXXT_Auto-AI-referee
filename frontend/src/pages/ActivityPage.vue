@@ -40,12 +40,14 @@ import {
   displayValue,
   eventTime,
   payloadEntries,
+  quizOutcomeMessage,
 } from '@/domain/events'
 import {
   formatFullDateTime as formatDate,
   formatRelative as formatRelativeDate,
   shortIdentifier as formatIdentifier,
 } from '@/utils/format'
+import { vScrollFade } from '@/utils/scrollFade'
 
 type ActivityCategory = 'attention' | 'running' | 'completed' | 'system'
 type ActivityTone = 'danger' | 'warning' | 'success' | 'info' | 'neutral'
@@ -121,8 +123,22 @@ const taskById = computed(
   () => new Map((tasks.data.value ?? []).map((task) => [task.id, task])),
 )
 
+function isUnsubmittedQuiz(event: SystemEvent): boolean {
+  return event.kind.startsWith('chapter.quiz.') && event.kind !== 'chapter.quiz.submitted'
+}
+
 function reasonFor(eventsInGroup: SystemEvent[], task: StudyTask | null): string {
   for (const event of eventsInGroup) {
+    const quizEvent =
+      event.kind === 'chapter.unsubmitted'
+        ? eventsInGroup.find(
+            (candidate) => isUnsubmittedQuiz(candidate) && candidate.chapter_id === event.chapter_id,
+          )
+        : isUnsubmittedQuiz(event)
+          ? event
+          : undefined
+    const quizMessage = quizEvent ? quizOutcomeMessage(quizEvent.payload) : null
+    if (quizMessage) return quizMessage
     const reason = displayValue(event.payload.reason)
     if (reason) {
       const message = REASON_MESSAGES[reason]
@@ -137,6 +153,9 @@ function reasonFor(eventsInGroup: SystemEvent[], task: StudyTask | null): string
   if (task?.last_error) {
     const message = REASON_MESSAGES[task.last_error]
     if (message) return message
+  }
+  if (task?.status === 'running' && task.chapter_total > 0) {
+    return `已完成 ${task.chapter_succeeded} / ${task.chapter_total} 个章节。`
   }
   if (task?.status) {
     const message = STATUS_MESSAGES[task.status]
@@ -203,7 +222,11 @@ function categoryFor(eventsInGroup: SystemEvent[], task: StudyTask | null): Acti
   return 'running'
 }
 
-function toneFor(category: ActivityCategory, eventsInGroup: SystemEvent[]): ActivityTone {
+function toneFor(
+  category: ActivityCategory,
+  eventsInGroup: SystemEvent[],
+  task: StudyTask | null,
+): ActivityTone {
   if (category === 'completed') return 'success'
   if (category === 'running') return 'info'
   if (category === 'system') {
@@ -211,7 +234,7 @@ function toneFor(category: ActivityCategory, eventsInGroup: SystemEvent[]): Acti
     if (eventsInGroup.some((event) => event.level === 'warning')) return 'warning'
     return 'neutral'
   }
-  return eventsInGroup.some((event) => event.level === 'error') ? 'danger' : 'warning'
+  return task?.status === 'failed' ? 'danger' : 'warning'
 }
 
 function titleFor(
@@ -250,7 +273,7 @@ function buildGroup(key: string, groupEvents: SystemEvent[]): ActivityGroup {
     latest,
     task,
     category,
-    tone: toneFor(category, sorted),
+    tone: toneFor(category, sorted, task),
     title: titleFor(category, sorted, task),
     description: category === 'system' ? eventDescription(latest) : reasonFor(sorted, task),
     chapterTitle: sorted.find((event) => event.chapter_title)?.chapter_title ?? null,
@@ -371,19 +394,12 @@ function goToTask(taskId: string): void {
 function isFutureDate(timestamp: number): boolean {
   return timestamp > Date.now()
 }
-
-function groupTagLabel(group: ActivityGroup): string {
-  if (group.category === 'attention') {
-    return group.task?.status === 'failed' ? '失败' : '需要处理'
-  }
-  return TONE_META[group.tone].label
-}
 </script>
 
 <template>
   <section class="content-section flush activity-section">
     <div class="list-toolbar">
-      <div class="segmented" role="tablist" aria-label="按活动状态筛选">
+      <div v-scroll-fade class="segmented" role="tablist" aria-label="按活动状态筛选">
         <button
           v-for="tab in CATEGORY_TABS"
           :key="tab.label"
@@ -501,7 +517,7 @@ function groupTagLabel(group: ActivityGroup): string {
                 size="small"
                 :bordered="false"
               >
-                {{ groupTagLabel(group) }}
+                {{ TONE_META[group.tone].label }}
               </NTag>
               <time :datetime="group.latest.occurred_at" :title="formatDate(group.latest.occurred_at)">
                 {{ formatRelativeDate(group.latest.occurred_at) }}

@@ -196,6 +196,7 @@ async function mockApi(page: Page, initial: MockApiOptions = {}): Promise<ApiSta
         provider: initial.answerProvider ?? 'yanxi',
         submit_mode: 'save_only',
         threshold: 0.8,
+        timeout_seconds: 60,
         revision: 1,
         config: {
           endpoint: null,
@@ -536,6 +537,7 @@ test('activity groups a task run, preserves its outcome, and exposes technical d
   const group = page.getByTestId('activity-group').filter({ hasText: task.course_title })
   await expect(group).toHaveCount(1)
   await expect(group).toContainText('需要处理')
+  await expect(group).toHaveClass(/tone-warning/)
   await expect(group).not.toContainText('执行进程结束')
   await expect(page.getByTestId('activity-group')).toHaveCount(1)
 
@@ -675,6 +677,57 @@ test('account credential forms opt out of saved administrator autofill', async (
   )
 })
 
+test('answer API credentials opt out of saved administrator autofill', async ({ page }) => {
+  await mockApi(page, { authenticated: true, answerProvider: 'openai_compatible' })
+  await page.goto('/settings?tab=answer')
+
+  const answerForm = page.locator('.integration-form')
+  await expect(answerForm).toHaveAttribute('autocomplete', 'off')
+
+  await expect(answerForm.locator('input[name="cx-answer-api-url"]')).toHaveAttribute(
+    'autocomplete',
+    'off',
+  )
+  await expect(answerForm.locator('input[name="cx-answer-model"]')).toHaveAttribute(
+    'autocomplete',
+    'off',
+  )
+  await expect(answerForm.locator('input[name="cx-answer-api_key"]')).toHaveAttribute(
+    'autocomplete',
+    'new-password',
+  )
+
+  await answerForm.getByRole('button', { name: '添加请求头' }).click()
+  await expect(answerForm.locator('input[name="cx-answer-header-name-0"]')).toHaveAttribute(
+    'autocomplete',
+    'off',
+  )
+  await expect(answerForm.locator('input[name="cx-answer-header-value-0"]')).toHaveAttribute(
+    'autocomplete',
+    'off',
+  )
+})
+
+test('notification secrets opt out of saved administrator autofill', async ({ page }) => {
+  await mockApi(page, { authenticated: true })
+  await page.goto('/settings?tab=notifications')
+
+  const notificationForm = page.locator('.notification-form')
+  await expect(notificationForm).toHaveAttribute('autocomplete', 'off')
+  for (const name of [
+    'cx-notify-server_chan-webhook',
+    'cx-notify-qmsg-webhook',
+    'cx-notify-bark-webhook',
+    'cx-notify-telegram-bot-token',
+    'cx-notify-telegram-chat-id',
+  ]) {
+    await expect(notificationForm.locator(`input[name="${name}"]`)).toHaveAttribute(
+      'autocomplete',
+      'new-password',
+    )
+  }
+})
+
 for (const nativeUuid of [true, false]) {
   test(`OpenCode request headers are saved and retain the routing session (native UUID: ${nativeUuid})`, async ({ page }) => {
     if (!nativeUuid) {
@@ -697,6 +750,7 @@ for (const nativeUuid of [true, false]) {
       }
       await json(route, 200, {
         enabled: false, provider: 'openai_compatible', submit_mode: 'save_only', threshold: 0.8,
+        timeout_seconds: submitted ? Number(submitted.timeout_seconds) : 60,
         revision: submitted ? 2 : 1, config: savedConfig, profile: null,
         has_tokens: false, has_token: false, has_api_key: true,
         updated_at: '2030-01-01T00:00:00Z',
@@ -723,6 +777,86 @@ for (const nativeUuid of [true, false]) {
     await expect(sessionRow.getByRole('textbox', { name: '请求头值' })).toHaveValue(sessionId)
   })
 }
+
+test('answer timeout is editable and saved with the answer settings', async ({ page }) => {
+  await mockApi(page, { authenticated: true, answerProvider: 'openai_compatible' })
+  let submitted: Record<string, unknown> | null = null
+  await page.route('**/api/v1/settings/integrations/answer', async (route) => {
+    if (route.request().method() === 'GET') return route.fallback()
+    submitted = route.request().postDataJSON() as Record<string, unknown>
+    await route.fulfill({ status: 409, contentType: 'application/json', body: '{"detail":"stop"}' })
+  })
+  await page.goto('/settings?tab=answer')
+
+  const timeout = page.locator('input[name="cx-answer-timeout"]')
+  await expect(timeout).toHaveValue('60')
+  await timeout.fill('120')
+  await timeout.blur()
+  await page.getByRole('button', { name: '保存', exact: true }).click()
+  await expect.poll(() => submitted?.timeout_seconds).toBe(120)
+})
+
+test('timed-out quiz answers are explained instead of a generic provider failure', async ({ page }) => {
+  const task: StudyTask = {
+    id: 'task-quiz-timeout',
+    account_id: 1,
+    account_label: '主账号',
+    course_id: 'course-quiz',
+    class_id: 'class-quiz',
+    cpi: 'cpi-quiz',
+    course_title: '《论语》精读',
+    status: 'needs_attention',
+    desired_state: 'run',
+    priority: 0,
+    selected_chapter_ids: ['chapter-quiz'],
+    chapter_total: 1,
+    chapter_succeeded: 0,
+    chapter_needs_attention: 1,
+    created_at: '2030-01-01T00:00:00Z',
+    updated_at: '2030-01-01T00:00:09Z',
+    run_after: '2030-01-01T00:00:00Z',
+    started_at: '2030-01-01T00:00:01Z',
+    finished_at: '2030-01-01T00:00:09Z',
+    last_error: null,
+  }
+  const base = { task_id: task.id, account_id: 1, chapter_id: 'chapter-quiz', chapter_title: '1.1 学而' }
+  const events: SystemEvent[] = [
+    {
+      ...base,
+      id: 21,
+      kind: 'chapter.unsubmitted',
+      level: 'warning',
+      payload: { status: 'unsubmitted', reason: 'answer_provider_timeout' },
+      occurred_at: '2030-01-01T00:00:08Z',
+    },
+    {
+      ...base,
+      id: 20,
+      kind: 'chapter.quiz.unsubmitted',
+      level: 'warning',
+      payload: {
+        answered_count: 2,
+        total_questions: 3,
+        coverage: 0.6667,
+        provider_error_count: 1,
+        provider_result_reason: 'coverage_below_threshold',
+        provider_failure_reason: 'provider_timeout',
+        provider_status_code: null,
+        provider_timeout_seconds: 60,
+        submit_threshold: 0.9,
+        reason: 'coverage_below_threshold',
+      },
+      occurred_at: '2030-01-01T00:00:07Z',
+    },
+  ]
+  await mockApi(page, { authenticated: true, tasks: [task], events })
+  await page.goto('/activity')
+
+  const group = page.getByTestId('activity-group').filter({ hasText: task.course_title })
+  await expect(group).toContainText('3 道题中有 1 道因答题服务超过 60 秒未响应而没有答案，已答出 2 道')
+  await expect(group).toContainText('调大答题超时时间')
+  await expect(group).not.toContainText('请检查接口、模型、密钥')
+})
 
 test('icons and step markers stay centered in their visual containers', async ({ page }) => {
   await mockApi(page, {
@@ -834,6 +968,70 @@ test('desktop task selection keeps the bulk toolbar and task table visible', asy
   await expect(table).toBeVisible()
   await expect(table.locator('tbody tr')).toHaveCount(2)
   await expect(table.getByText('大学英语', { exact: true })).toBeVisible()
+  await expect(page.locator('.mobile-card-list')).toBeHidden()
+})
+
+test('desktop account list does not duplicate rows as mobile cards', async ({ page }) => {
+  await mockApi(page, {
+    authenticated: true,
+    accounts: [
+      {
+        id: 1,
+        remark: '主账号',
+        username_hint: '138****0000',
+        enabled: true,
+        user_agent: 'e2e',
+        speed: 1,
+        chapter_concurrency: 1,
+        unopened_policy: 'retry',
+        discussion_auto_reply: false,
+        has_password: true,
+        has_cookies: true,
+        answer_profile_override: null,
+      },
+    ],
+  })
+  await page.goto('/accounts')
+  await expect(page.locator('.n-data-table').getByText('主账号', { exact: true })).toBeVisible()
+  await expect(page.locator('.mobile-card-list')).toBeHidden()
+})
+
+test('body text uses the application font stack', async ({ page }) => {
+  await mockApi(page, { authenticated: true })
+  await page.goto('/')
+  await expect(page.getByRole('heading', { name: '概览' })).toBeVisible()
+  const fontFamily = await page.evaluate(() => getComputedStyle(document.body).fontFamily)
+  expect(fontFamily).toContain('Microsoft YaHei')
+})
+
+test('app user table stacks nickname above username', async ({ page }) => {
+  await mockApi(page, { authenticated: true })
+  await page.route('**/api/v1/app-users', (route) =>
+    json(route, 200, [
+      {
+        id: 1,
+        nickname: '张同学',
+        avatar_url: '',
+        quotas: {},
+        username: 'zhang01',
+        plan_expires_at: null,
+        task_credits: 0,
+        openid: '',
+        has_password: true,
+        disabled: false,
+        account_count: 0,
+        active_task_count: 0,
+        created_at: '2030-01-01T00:00:00Z',
+        updated_at: '2030-01-01T00:00:00Z',
+      },
+    ]),
+  )
+  await page.goto('/app-users')
+  const cell = page.locator('.user-cell')
+  await expect(cell).toBeVisible()
+  const nickname = await cell.getByText('张同学', { exact: true }).boundingBox()
+  const username = await cell.getByText('zhang01', { exact: true }).boundingBox()
+  expect(username!.y).toBeGreaterThan(nickname!.y + nickname!.height - 1)
 })
 
 test('mobile views do not overflow at 390x844', async ({ page }) => {
@@ -844,6 +1042,20 @@ test('mobile views do not overflow at 390x844', async ({ page }) => {
     await page.goto(path)
     await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390)
   }
+})
+
+test('mobile filter tabs hint at hidden overflow and the service warning stays readable', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await mockApi(page, { authenticated: true })
+  await page.goto('/activity')
+
+  const tabs = page.getByRole('tablist', { name: '按活动状态筛选' })
+  await expect(tabs).toHaveAttribute('data-overflow-end', '')
+  await expect(tabs).not.toHaveAttribute('data-overflow-start', '')
+  await tabs.getByRole('tab', { name: /系统记录/ }).click()
+  await expect(tabs).toHaveAttribute('data-overflow-start', '')
+
+  await expect(page.getByTestId('service-pill')).toContainText('调度已停止')
 })
 
 test('theme choice persists and system mode follows the OS preference', async ({ page }) => {

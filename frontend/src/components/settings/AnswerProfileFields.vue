@@ -8,7 +8,6 @@ import {
   NInputNumber,
   NSelect,
   NSwitch,
-  NTag,
 } from 'naive-ui'
 import { computed, ref, watch } from 'vue'
 
@@ -116,17 +115,12 @@ function updateTtlUnit(unit: TtlUnit) {
         <strong>多模型共识</strong>
         <span>并行请求多个模型，分歧时交由裁判模型判断</span>
       </div>
-      <div class="profile-control">
-        <NTag size="small" :type="modelValue.ensemble_enabled ? 'success' : 'default'">
-          {{ modelValue.ensemble_enabled ? '已启用' : '已关闭' }}
-        </NTag>
-        <NSwitch
-          :value="modelValue.ensemble_enabled"
-          :disabled="disabled"
-          aria-label="多模型共识"
-          @update:value="updateField('ensemble_enabled', $event)"
-        />
-      </div>
+      <NSwitch
+        :value="modelValue.ensemble_enabled"
+        :disabled="disabled"
+        aria-label="多模型共识"
+        @update:value="updateField('ensemble_enabled', $event)"
+      />
     </div>
 
     <div v-if="modelValue.ensemble_enabled" class="profile-fields ensemble-fields">
@@ -148,6 +142,7 @@ function updateTtlUnit(unit: TtlUnit) {
           :value="modelValue.referee_model"
           :disabled="disabled"
           :maxlength="512"
+          :input-props="{ name: 'cx-answer-referee-model', autocomplete: 'off' }"
           placeholder="可选，留空时使用首个模型"
           @update:value="updateField('referee_model', $event)"
         />
@@ -246,7 +241,7 @@ function updateTtlUnit(unit: TtlUnit) {
   display: grid;
   grid-template-columns: 36px minmax(0, 1fr);
   align-items: center;
-  gap: 12px;
+  gap: 14px;
   padding: 16px 20px 8px;
 }
 
@@ -289,18 +284,12 @@ function updateTtlUnit(unit: TtlUnit) {
   min-height: 62px;
   align-items: center;
   gap: 16px;
-  padding: 11px 20px;
+  padding: 11px 20px 11px 70px;
   border-bottom: 1px solid var(--color-border-faint);
 }
 
 .profile-copy {
   min-width: 0;
-}
-
-.profile-control {
-  display: flex;
-  align-items: center;
-  gap: 9px;
 }
 
 .profile-fields {
@@ -309,7 +298,7 @@ function updateTtlUnit(unit: TtlUnit) {
   gap: 14px;
   border-bottom: 1px solid var(--color-border-soft);
   background: var(--color-surface-muted);
-  padding: 14px 20px 0 20px;
+  padding: 14px 20px 0 70px;
 }
 
 .profile-fields :deep(.n-input-number),
@@ -338,7 +327,7 @@ function updateTtlUnit(unit: TtlUnit) {
 }
 
 .search-disclosure {
-  margin: 12px 20px;
+  margin: 12px 20px 12px 70px;
 }
 
 .compact {
@@ -391,12 +380,6 @@ function updateTtlUnit(unit: TtlUnit) {
   .search-disclosure {
     margin-right: 14px;
     margin-left: 14px;
-  }
-}
-
-@media (max-width: 420px) {
-  .profile-control :deep(.n-tag) {
-    display: none;
   }
 }
 </style>

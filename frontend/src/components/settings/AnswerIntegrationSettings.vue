@@ -10,6 +10,7 @@ import {
   NForm,
   NFormItem,
   NInput,
+  NInputNumber,
   NSelect,
   NSlider,
   NSkeleton,
@@ -21,6 +22,7 @@ import { computed, reactive, ref, watch } from 'vue'
 
 import {
   ApiError,
+  answerTestHint,
   getAnswerIntegration,
   integrationTestMessage,
   testAnswerIntegration,
@@ -55,6 +57,7 @@ interface AnswerForm {
   provider: AnswerProviderKind
   submitMode: AnswerSubmitMode
   threshold: number
+  timeoutSeconds: number
   endpoint: string
   baseUrl: string
   model: string
@@ -72,6 +75,10 @@ interface AnswerForm {
 
 type SecretKind = 'tokens' | 'token' | 'api_key' | null
 
+const DEFAULT_TIMEOUT_SECONDS = 60
+const MIN_TIMEOUT_SECONDS = 10
+const MAX_TIMEOUT_SECONDS = 300
+
 const queryKey = ['integration-settings', 'answer'] as const
 const queryClient = useQueryClient()
 const message = useMessage()
@@ -85,6 +92,7 @@ const form = reactive<AnswerForm>({
   provider: 'yanxi',
   submitMode: 'auto',
   threshold: 0.8,
+  timeoutSeconds: DEFAULT_TIMEOUT_SECONDS,
   endpoint: '',
   baseUrl: '',
   model: '',
@@ -176,6 +184,9 @@ const secretLabel = computed(() => {
   if (secretKind.value === 'api_key') return 'API Key'
   return ''
 })
+const secretLabelInline = computed(() =>
+  /^[A-Za-z]/.test(secretLabel.value) ? ` ${secretLabel.value}` : secretLabel.value,
+)
 
 const secretValue = computed({
   get() {
@@ -308,6 +319,7 @@ function applyAnswer(value: AnswerIntegration) {
     provider: value.provider,
     submitMode: value.submit_mode,
     threshold: value.threshold,
+    timeoutSeconds: value.timeout_seconds,
     endpoint: value.config.endpoint ?? '',
     baseUrl: value.config.base_url ?? '',
     model: value.config.model ?? '',
@@ -331,6 +343,10 @@ function applyAnswer(value: AnswerIntegration) {
   credentialPresent.value = value.has_tokens || value.has_token || value.has_api_key
 }
 
+function updateTimeout(value: number | null) {
+  if (value !== null) form.timeoutSeconds = value
+}
+
 function updateEnabled(enabled: boolean) {
   form.enabled = enabled
   if (enabled) clearSecret.value = false
@@ -347,7 +363,7 @@ function validateForm(): boolean {
     return false
   }
   if (secretKind.value && !credentialPresent.value && !secretValue.value.trim()) {
-    message.warning(`请填写${secretLabel.value}`)
+    message.warning(`请填写${secretLabelInline.value}`)
     return false
   }
   return true
@@ -361,6 +377,7 @@ function buildPayload(): UpdateAnswerIntegrationInput | null {
     provider: form.provider,
     submit_mode: form.submitMode,
     threshold: form.threshold,
+    timeout_seconds: form.timeoutSeconds,
     profile: normalizedAnswerProfile(form.profile),
   }
 
@@ -441,7 +458,13 @@ function errorText(error: unknown, fallback: string): string {
       <NSkeleton text :repeat="6" />
     </div>
 
-    <NForm v-else-if="saved" label-placement="top" @submit.prevent="submit">
+    <NForm
+      v-else-if="saved"
+      class="integration-form"
+      label-placement="top"
+      autocomplete="off"
+      @submit.prevent="submit"
+    >
       <div class="setting-row">
         <span class="setting-icon"><Bot :size="18" /></span>
         <div class="setting-copy">
@@ -477,6 +500,24 @@ function errorText(error: unknown, fallback: string): string {
           </template>
           <NSlider v-model:value="form.threshold" :min="0" :max="1" :step="0.05" />
         </NFormItem>
+        <NFormItem label="答题超时时间" feedback="单题最长等待时间，超时后自动重试 1 次">
+          <NInputNumber
+            :value="form.timeoutSeconds"
+            class="timeout-input"
+            :min="MIN_TIMEOUT_SECONDS"
+            :max="MAX_TIMEOUT_SECONDS"
+            :step="10"
+            :precision="0"
+            :input-props="{
+              name: 'cx-answer-timeout',
+              autocomplete: 'off',
+              'aria-label': '答题超时时间',
+            }"
+            @update:value="updateTimeout"
+          >
+            <template #suffix>秒</template>
+          </NInputNumber>
+        </NFormItem>
       </div>
 
       <NAlert
@@ -505,16 +546,22 @@ function errorText(error: unknown, fallback: string): string {
           <NFormItem v-if="isEndpointProvider" label="服务地址">
             <NInput
               v-model:value="form.endpoint"
+              :input-props="{ name: 'cx-answer-endpoint', autocomplete: 'off' }"
               placeholder="https://example.com/query"
               :disabled="form.clearTokens || form.clearToken"
             />
           </NFormItem>
           <NFormItem v-if="isModelProvider" label="API 地址">
-            <NInput v-model:value="form.baseUrl" placeholder="https://api.example.com/v1" />
+            <NInput
+              v-model:value="form.baseUrl"
+              :input-props="{ name: 'cx-answer-api-url', autocomplete: 'off' }"
+              placeholder="https://api.example.com/v1"
+            />
           </NFormItem>
           <NFormItem v-if="isModelProvider || form.provider === 'like'" label="模型">
             <NInput
               v-model:value="form.model"
+              :input-props="{ name: 'cx-answer-model', autocomplete: 'off' }"
               :placeholder="form.provider === 'like' ? '可选' : '例如 gpt-4o-mini'"
             />
           </NFormItem>
@@ -539,11 +586,13 @@ function errorText(error: unknown, fallback: string): string {
               >
                 <NInput
                   v-model:value="row.name"
+                  :input-props="{ name: `cx-answer-header-name-${index}`, autocomplete: 'off' }"
                   placeholder="请求头名称"
                   aria-label="请求头名称"
                 />
                 <NInput
                   v-model:value="row.value"
+                  :input-props="{ name: `cx-answer-header-value-${index}`, autocomplete: 'off' }"
                   placeholder="请求头值"
                   aria-label="请求头值"
                 />
@@ -553,7 +602,7 @@ function errorText(error: unknown, fallback: string): string {
                   @click="removeHeaderRow(index)"
                 />
               </div>
-              <NButton quaternary size="small" @click="addHeaderRow">
+              <NButton class="add-header-button" quaternary size="small" @click="addHeaderRow">
                 <template #icon><Plus /></template>
                 添加请求头
               </NButton>
@@ -571,12 +620,15 @@ function errorText(error: unknown, fallback: string): string {
                 v-model:value="secretValue"
                 type="password"
                 show-password-on="click"
-                :input-props="{ autocomplete: 'new-password' }"
-                :placeholder="credentialPresent ? '已保存，留空保持不变' : `请输入${secretLabel}`"
+                :input-props="{
+                  name: `cx-answer-${secretKind ?? 'credential'}`,
+                  autocomplete: 'new-password',
+                }"
+                :placeholder="credentialPresent ? '已保存，留空保持不变' : `请输入${secretLabelInline}`"
                 :disabled="clearSecret"
               />
               <NCheckbox v-if="credentialPresent" v-model:checked="clearSecret">
-                清除已保存的{{ secretLabel }}（将同时停用自动答题）
+                清除已保存的{{ secretLabelInline }}（将同时停用自动答题）
               </NCheckbox>
             </div>
           </NFormItem>
@@ -617,7 +669,7 @@ function errorText(error: unknown, fallback: string): string {
         <template v-if="testResult.ok && testResult.answer">
           测试题「中华人民共和国的首都是哪座城市？」返回：{{ testResult.answer }}
         </template>
-        <template v-else-if="!testResult.ok">请检查答案源地址、凭据和网络后重试。</template>
+        <template v-else-if="!testResult.ok">{{ answerTestHint(testResult) }}</template>
       </NAlert>
 
       <div class="sticky-actions">
@@ -653,7 +705,11 @@ function errorText(error: unknown, fallback: string): string {
 
 <style scoped>
 .common-fields {
-  grid-template-columns: repeat(2, minmax(0, 1fr)) minmax(190px, 1.2fr);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.timeout-input {
+  width: 100%;
 }
 
 .provider-row {
@@ -699,6 +755,10 @@ function errorText(error: unknown, fallback: string): string {
 
 .headers-field .opencode-note {
   margin: 0;
+}
+
+.add-header-button {
+  justify-self: start;
 }
 
 .header-row {

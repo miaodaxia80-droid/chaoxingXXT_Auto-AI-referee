@@ -88,6 +88,15 @@ from chaoxing_app.worker.task_progress import (
 )
 
 ResultT = TypeVar("ResultT")
+_PROVIDER_CHAPTER_REASONS: dict[str, str] = {
+    "provider_timeout": "answer_provider_timeout",
+    "provider_rate_limited": "answer_provider_rate_limited",
+    "provider_unauthorized": "answer_provider_unauthorized",
+    "provider_not_found": "answer_provider_not_found",
+    "provider_unavailable": "answer_provider_unavailable",
+    "provider_session_required": "answer_provider_session_required",
+    "provider_response_invalid": "answer_provider_response_invalid",
+}
 AccountSessionT_co = TypeVar("AccountSessionT_co", bound="AccountStudySession", covariant=True)
 
 
@@ -962,6 +971,8 @@ class StudyTaskExecutor:
                 "provider_result_reason": result.reason,
                 "provider_failure_reason": result.provider_failure_reason,
                 "provider_status_code": result.provider_status_code,
+                "provider_timeout_seconds": answer_binding.timeout_seconds,
+                "submit_threshold": self._quiz_submit_threshold(snapshot.config),
                 "reason": (
                     answer_binding.unavailable_reason
                     if answer_binding.unavailable_reason
@@ -974,8 +985,10 @@ class StudyTaskExecutor:
             return None, None
         if result.status is QuizSubmissionStatus.REJECTED:
             raise TaskPointRejected
-        return ChapterStatus.UNSUBMITTED, (
-            "answer_provider_failed" if result.provider_error_count else "quiz_requires_answers"
+        if not result.provider_error_count:
+            return ChapterStatus.UNSUBMITTED, "quiz_requires_answers"
+        return ChapterStatus.UNSUBMITTED, _PROVIDER_CHAPTER_REASONS.get(
+            result.provider_failure_reason, "answer_provider_failed"
         )
 
     def _run_video(

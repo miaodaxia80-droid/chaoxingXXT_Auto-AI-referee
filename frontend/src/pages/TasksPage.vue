@@ -58,6 +58,7 @@ import {
   type TaskFilter,
 } from '@/domain/tasks'
 import { formatShortDateTime } from '@/utils/format'
+import { vScrollFade } from '@/utils/scrollFade'
 
 const PAGE_SIZE = 20
 
@@ -407,7 +408,7 @@ const pagination = computed(() =>
 <template>
   <section class="content-section flush task-list-section">
     <div class="list-toolbar">
-      <div class="segmented" role="tablist" aria-label="按任务状态筛选">
+      <div v-scroll-fade class="segmented" role="tablist" aria-label="按任务状态筛选">
         <button
           v-for="filter in TASK_FILTERS"
           :key="filter.value"

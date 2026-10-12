@@ -217,6 +217,7 @@ export interface AnswerIntegration {
   provider: AnswerProviderKind
   submit_mode: AnswerSubmitMode
   threshold: number
+  timeout_seconds: number
   revision: number
   config: AnswerProviderPublicConfig
   profile: AnswerProfile | null
@@ -232,6 +233,7 @@ export interface UpdateAnswerIntegrationInput {
   provider?: AnswerProviderKind
   submit_mode?: AnswerSubmitMode
   threshold?: number
+  timeout_seconds?: number
   endpoint?: string
   base_url?: string
   model?: string
@@ -250,6 +252,7 @@ export interface UpdateAnswerIntegrationInput {
 export interface IntegrationTestResult {
   ok: boolean
   reason: string
+  status_code?: number | null
   answer: string | null
   latency_ms: number
 }

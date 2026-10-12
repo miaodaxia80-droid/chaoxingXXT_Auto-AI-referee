@@ -167,14 +167,28 @@ export function testNotificationIntegration(
 
 const TEST_FAILURE_MESSAGES: Record<string, string> = {
   configuration_invalid: '配置无效，请检查地址与凭据',
-  timeout: '请求超时，请检查网络或服务地址',
   request_failed: '无法连接到服务',
-  provider_http_error: '服务返回了错误响应，请检查凭据',
+  provider_http_error: '答题接口返回了错误响应',
+  provider_unauthorized: '答题接口拒绝了凭据',
+  provider_not_found: '答题接口找不到该地址或模型',
+  provider_rate_limited: '答题接口触发限流',
+  provider_unavailable: '答题服务暂时不可用',
   provider_session_required: '接口要求会话标识，请在自定义请求头中填写 x-opencode-session',
   provider_failed: '服务调用失败',
   provider_rejected: '服务拒绝了本次请求',
-  no_answer: '服务未返回答案',
+  no_answer: '服务有响应，但没有返回可用答案',
   sender_failure: '发送失败',
+}
+
+const ANSWER_TEST_HINTS: Record<string, string> = {
+  timeout: '模型响应较慢时，可以调大「答题超时时间」，或换用响应更快的模型。',
+  provider_rate_limited: '请稍后再试，或换用额度更高的模型。',
+  provider_unavailable: '上游服务暂时出错，请稍后再试。',
+  provider_unauthorized: '请检查 API Key 或访问令牌是否正确、是否已过期。',
+  provider_not_found: '请检查 API 地址和模型名称是否正确。',
+  provider_session_required: '在自定义请求头中添加 x-opencode-session 后再试。',
+  no_answer: '可以换一个模型再试。',
+  configuration_invalid: '请检查地址格式与凭据。',
 }
 
 export function integrationTestMessage(result: IntegrationTestResult): string {
@@ -182,5 +196,13 @@ export function integrationTestMessage(result: IntegrationTestResult): string {
   if (result.reason.startsWith('http_')) {
     return `服务返回 HTTP ${result.reason.slice(5)}，请检查配置`
   }
-  return TEST_FAILURE_MESSAGES[result.reason] ?? '测试失败'
+  if (result.reason === 'timeout') {
+    return `请求超时：等待约 ${Math.round(result.latency_ms / 1000)} 秒仍未返回结果`
+  }
+  const message = TEST_FAILURE_MESSAGES[result.reason] ?? '测试失败'
+  return result.status_code ? `${message}（HTTP ${result.status_code}）` : message
+}
+
+export function answerTestHint(result: IntegrationTestResult): string {
+  return ANSWER_TEST_HINTS[result.reason] ?? '请检查答案源地址、模型、凭据和网络后重试。'
 }

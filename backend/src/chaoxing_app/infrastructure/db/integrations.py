@@ -21,6 +21,9 @@ from chaoxing_app.domain.answer_profiles import (
     validate_answer_profile_provider,
 )
 from chaoxing_app.domain.integrations import (
+    ANSWER_TIMEOUT_DEFAULT_SECONDS,
+    ANSWER_TIMEOUT_MAX_SECONDS,
+    ANSWER_TIMEOUT_MIN_SECONDS,
     AnswerProviderKind,
     AnswerSubmitMode,
     NotificationChannelKind,
@@ -77,11 +80,14 @@ _DEFAULT_ANSWER_PUBLIC: dict[str, object] = {
     "provider": AnswerProviderKind.YANXI.value,
     "submit_mode": AnswerSubmitMode.AUTO.value,
     "threshold": 0.8,
+    "timeout_seconds": ANSWER_TIMEOUT_DEFAULT_SECONDS,
     "providers": _DEFAULT_PROVIDER_CONFIGS,
     "profile": AnswerProfile().to_json(),
 }
 
-_ANSWER_COMMON_FIELDS = frozenset({"enabled", "provider", "submit_mode", "threshold", "profile"})
+_ANSWER_COMMON_FIELDS = frozenset(
+    {"enabled", "provider", "submit_mode", "threshold", "timeout_seconds", "profile"}
+)
 _PROVIDER_PUBLIC_FIELDS: dict[AnswerProviderKind, frozenset[str]] = {
     AnswerProviderKind.YANXI: frozenset({"endpoint", "allow_unsafe_endpoint"}),
     AnswerProviderKind.LIKE: frozenset({"endpoint", "model", "search", "allow_unsafe_endpoint"}),
@@ -197,6 +203,16 @@ def _with_opencode_headers(
     return {**config, "headers": _normalize_provider_headers(headers)}
 
 
+def _answer_timeout_seconds(value: object) -> int:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or not ANSWER_TIMEOUT_MIN_SECONDS <= value <= ANSWER_TIMEOUT_MAX_SECONDS
+    ):
+        raise ValueError("answer timeout is out of range")
+    return value
+
+
 class IntegrationConfigurationError(ValueError):
     """A sanitized integration configuration failure suitable for an API response."""
 
@@ -219,6 +235,7 @@ class AnswerIntegrationView:
     provider: AnswerProviderKind
     submit_mode: AnswerSubmitMode
     threshold: float
+    timeout_seconds: int
     revision: int
     config: dict[str, object]
     profile: dict[str, object]
@@ -238,6 +255,7 @@ class AnswerRuntimeConfiguration:
     headers: dict[str, str] = dataclass_field(default_factory=dict)
     search: bool = False
     allow_unsafe_endpoint: bool = False
+    timeout_seconds: int = ANSWER_TIMEOUT_DEFAULT_SECONDS
     credential: str | None = dataclass_field(default=None, repr=False)
 
 
@@ -268,12 +286,14 @@ class _AnswerState:
     threshold: float
     provider_configs: dict[str, dict[str, object]]
     profile: AnswerProfile
+    timeout_seconds: int = ANSWER_TIMEOUT_DEFAULT_SECONDS
 
     def to_public_json(self) -> dict[str, object]:
         return {
             "provider": self.provider.value,
             "submit_mode": self.submit_mode.value,
             "threshold": self.threshold,
+            "timeout_seconds": self.timeout_seconds,
             "providers": deepcopy(self.provider_configs),
             "profile": self.profile.to_json(),
         }
@@ -427,6 +447,7 @@ class IntegrationSettingRepository:
                 selected,
                 "allow_unsafe_endpoint",
             ),
+            timeout_seconds=state.timeout_seconds,
             credential=credential,
         )
 
@@ -572,7 +593,12 @@ class IntegrationSettingRepository:
             if not isinstance(raw_profile, dict):
                 raise ValueError
             profile = parse_answer_profile(raw_profile)
-            return _AnswerState(provider, submit_mode, threshold, configs, profile)
+            timeout_seconds = _answer_timeout_seconds(
+                public.get("timeout_seconds", ANSWER_TIMEOUT_DEFAULT_SECONDS)
+            )
+            return _AnswerState(
+                provider, submit_mode, threshold, configs, profile, timeout_seconds
+            )
         except (KeyError, TypeError, ValueError):
             raise IntegrationConfigurationError(
                 "answer integration configuration is unavailable"
@@ -627,6 +653,16 @@ class IntegrationSettingRepository:
             if not 0.0 <= threshold <= 1.0:
                 raise IntegrationConfigurationError("answer threshold must be between 0 and 1")
 
+        timeout_seconds = state.timeout_seconds
+        if "timeout_seconds" in changes:
+            try:
+                timeout_seconds = _answer_timeout_seconds(changes["timeout_seconds"])
+            except ValueError:
+                raise IntegrationConfigurationError(
+                    "answer timeout must be between "
+                    f"{ANSWER_TIMEOUT_MIN_SECONDS} and {ANSWER_TIMEOUT_MAX_SECONDS} seconds"
+                ) from None
+
         configs = deepcopy(state.provider_configs)
         selected = configs[provider.value]
         for key in _PROVIDER_PUBLIC_FIELDS[provider]:
@@ -659,7 +695,10 @@ class IntegrationSettingRepository:
                 profile = parse_answer_profile(raw_profile)
             except ValueError as exc:
                 raise IntegrationConfigurationError(str(exc)) from None
-        return _AnswerState(provider, submit_mode, threshold, configs, profile), next_enabled
+        return (
+            _AnswerState(provider, submit_mode, threshold, configs, profile, timeout_seconds),
+            next_enabled,
+        )
 
     def _normalize_provider_config(
         self,
@@ -920,6 +959,7 @@ class IntegrationSettingRepository:
             provider=state.provider,
             submit_mode=state.submit_mode,
             threshold=state.threshold,
+            timeout_seconds=state.timeout_seconds,
             revision=model.revision,
             config=deepcopy(state.provider_configs[state.provider.value]),
             profile=state.profile.to_json(),

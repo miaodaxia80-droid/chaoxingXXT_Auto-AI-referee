@@ -46,6 +46,13 @@ _SAFE_REASONS = frozenset(
         "platform_http_error",
         "media_completion_unverified",
         "answer_provider_failed",
+        "answer_provider_timeout",
+        "answer_provider_rate_limited",
+        "answer_provider_unauthorized",
+        "answer_provider_not_found",
+        "answer_provider_unavailable",
+        "answer_provider_session_required",
+        "answer_provider_response_invalid",
         "internal_execution_error",
     }
 )

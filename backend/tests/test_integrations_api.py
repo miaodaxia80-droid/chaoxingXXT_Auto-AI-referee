@@ -83,6 +83,7 @@ def test_integration_reads_require_login_and_writes_require_csrf() -> None:
                 "provider": "yanxi",
                 "submit_mode": "auto",
                 "threshold": 0.8,
+                "timeout_seconds": 60,
                 "revision": 1,
                 "config": {
                     "endpoint": "https://tk.enncy.cn/query",
@@ -665,8 +666,91 @@ def test_answer_test_reports_failures_without_exception_text() -> None:
 
         assert response.status_code == 200
         assert response.json()["ok"] is False
-        assert response.json()["reason"] == "provider_http_error"
+        assert response.json()["reason"] == "provider_unauthorized"
+        assert response.json()["status_code"] == 401
         assert "secret-bearing" not in response.text
+
+
+def test_answer_timeout_defaults_validates_and_reaches_the_provider() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        app, client = make_client(temp_dir)
+        built_timeouts: list[int] = []
+
+        class _Provider:
+            def answer(self, question: QuizQuestion, *, course_context: str = "") -> str:
+                return "A. 北京"
+
+        def builder(configuration, _session):  # type: ignore[no-untyped-def]
+            built_timeouts.append(configuration.timeout_seconds)
+            return _Provider()
+
+        app.dependency_overrides[get_answer_provider_builder] = lambda: builder
+        with client:
+            csrf = bootstrap_and_login(client)
+            path = "/api/v1/settings/integrations/answer"
+            assert client.get(path).json()["timeout_seconds"] == 60
+
+            for invalid in (9, 301, 30.5, True):
+                rejected = client.patch(
+                    path, headers={"X-CSRF-Token": csrf}, json={"timeout_seconds": invalid}
+                )
+                assert rejected.status_code == 422, invalid
+
+            updated = client.patch(
+                path,
+                headers={"X-CSRF-Token": csrf},
+                json={
+                    "provider": "tiku_adapter",
+                    "endpoint": "https://tiku.example.test/query",
+                    "enabled": True,
+                    "timeout_seconds": 120,
+                },
+            )
+            assert updated.status_code == 200, updated.text
+            assert updated.json()["timeout_seconds"] == 120
+            assert client.get(path).json()["timeout_seconds"] == 120
+            assert client.post(f"{path}/test", headers={"X-CSRF-Token": csrf}).json()["ok"]
+
+        assert built_timeouts == [120]
+
+
+def test_answer_test_classifies_provider_http_statuses() -> None:
+    expected = {
+        403: "provider_unauthorized",
+        404: "provider_not_found",
+        429: "provider_rate_limited",
+        503: "provider_unavailable",
+        400: "provider_http_error",
+    }
+    for status_code, reason in expected.items():
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app, client = make_client(temp_dir)
+
+            class _Provider:
+                def __init__(self, code: int) -> None:
+                    self._code = code
+
+                def answer(self, question: QuizQuestion, *, course_context: str = "") -> str:
+                    raise PlatformHTTPError("answer provider", status_code=self._code)
+
+            app.dependency_overrides[get_answer_provider_builder] = (
+                lambda code=status_code: (lambda _configuration, _session: _Provider(code))
+            )
+            with client:
+                csrf = bootstrap_and_login(client)
+                path = "/api/v1/settings/integrations/answer"
+                client.patch(
+                    path,
+                    headers={"X-CSRF-Token": csrf},
+                    json={
+                        "provider": "tiku_adapter",
+                        "endpoint": "https://tiku.example.test/query",
+                        "enabled": True,
+                    },
+                )
+                body = client.post(f"{path}/test", headers={"X-CSRF-Token": csrf}).json()
+            assert body["reason"] == reason, status_code
+            assert body["status_code"] == status_code
 
 
 def test_openai_compatible_custom_headers_roundtrip_and_are_hidden_from_users() -> None:

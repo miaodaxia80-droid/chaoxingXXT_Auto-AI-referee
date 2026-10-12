@@ -41,6 +41,7 @@ from chaoxing_app.platform.task_points.quiz import AnswerProvider, ProviderAnswe
 class AnswerProviderBinding:
     provider: AnswerProvider | None = None
     unavailable_reason: str = "answer_integration_disabled"
+    timeout_seconds: int | None = None
 
 
 class AnswerProviderRuntimePort(Protocol):
@@ -59,6 +60,8 @@ class DisabledAnswerProviderRuntime:
         del config_snapshot
         yield AnswerProviderBinding()
 
+
+_CONNECT_TIMEOUT_SECONDS = 5.0
 
 type ProviderSessionFactory = type[requests.Session]
 type SearchContextFactory = Callable[
@@ -298,7 +301,11 @@ class AnswerProviderRuntimeFactory:
                     unavailable_reason="answer_configuration_unavailable"
                 )
                 return
-            yield AnswerProviderBinding(provider=provider, unavailable_reason="")
+            yield AnswerProviderBinding(
+                provider=provider,
+                unavailable_reason="",
+                timeout_seconds=configuration.timeout_seconds,
+            )
         finally:
             for provider_session in provider_sessions:
                 provider_session.close()
@@ -355,11 +362,13 @@ def build_answer_provider(
     *,
     model_override: str = "",
 ) -> AnswerProvider:
+    timeout = (_CONNECT_TIMEOUT_SECONDS, float(configuration.timeout_seconds))
     if configuration.provider is AnswerProviderKind.YANXI:
         return YanxiAnswerProvider(
             tokens=configuration.credential or "",
             endpoint=configuration.endpoint,
             session=session,
+            timeout=timeout,
             allow_unsafe_endpoint=configuration.allow_unsafe_endpoint,
         )
     if configuration.provider is AnswerProviderKind.LIKE:
@@ -369,12 +378,14 @@ def build_answer_provider(
             model=model_override or configuration.model,
             search=configuration.search,
             session=session,
+            timeout=timeout,
             allow_unsafe_endpoint=configuration.allow_unsafe_endpoint,
         )
     if configuration.provider is AnswerProviderKind.TIKU_ADAPTER:
         return TikuAdapterAnswerProvider(
             endpoint=configuration.endpoint,
             session=session,
+            timeout=timeout,
             allow_unsafe_endpoint=configuration.allow_unsafe_endpoint,
         )
     if configuration.provider is AnswerProviderKind.OPENAI_COMPATIBLE:
@@ -383,6 +394,7 @@ def build_answer_provider(
             base_url=configuration.base_url,
             model=model_override or configuration.model,
             session=session,
+            timeout=timeout,
             allow_unsafe_endpoint=configuration.allow_unsafe_endpoint,
             headers=configuration.headers,
         )
@@ -391,5 +403,6 @@ def build_answer_provider(
         base_url=configuration.base_url,
         model=model_override or configuration.model,
         session=session,
+        timeout=timeout,
         allow_unsafe_endpoint=configuration.allow_unsafe_endpoint,
     )

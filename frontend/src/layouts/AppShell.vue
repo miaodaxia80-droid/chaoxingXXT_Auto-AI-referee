@@ -209,7 +209,10 @@ function requestLogout() {
             v-if="auth.isAdmin"
             type="button"
             class="service-pill"
+            :class="{ quiet: serviceState.tone === 'ok' }"
             data-testid="service-pill"
+            :aria-label="serviceState.label"
+            :title="serviceState.label"
             @click="navigate('dashboard')"
           >
             <span class="status-dot" :class="serviceState.tone" />

@@ -27,12 +27,28 @@ class PlatformHTTPError(PlatformError):
         self.status_code = status_code
 
 
+def answer_provider_http_reason(status_code: int, *, session_required: bool = False) -> str:
+    """Classify a provider HTTP rejection into a stable, user-explainable reason code."""
+
+    if session_required:
+        return "provider_session_required"
+    if status_code in {401, 403}:
+        return "provider_unauthorized"
+    if status_code == 404:
+        return "provider_not_found"
+    if status_code == 429:
+        return "provider_rate_limited"
+    if status_code >= 500:
+        return "provider_unavailable"
+    return "provider_http_error"
+
+
 class AnswerProviderHTTPError(PlatformHTTPError):
     """Sanitized provider rejection; never retains a URL, body or credential."""
 
     def __init__(self, status_code: int, *, session_required: bool = False) -> None:
         super().__init__("answer provider", status_code)
-        self.reason = "provider_session_required" if session_required else "provider_http_error"
+        self.reason = answer_provider_http_reason(status_code, session_required=session_required)
 
 
 class PlatformAuthenticationError(PlatformError):

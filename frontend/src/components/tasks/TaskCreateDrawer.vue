@@ -671,7 +671,7 @@ function goTo(name: 'accounts' | 'portal'): void {
             <strong>{{ selectedChapterIds.length }} 个章节</strong>
             <span>创建后进入账号互斥队列，同一账号的任务依次执行</span>
           </div>
-          <NButton @click="emit('update:show', false)">完成</NButton>
+          <NButton @click="emit('update:show', false)">关闭</NButton>
           <NButton
             type="primary"
             :loading="createTask.isPending.value"

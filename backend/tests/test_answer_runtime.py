@@ -88,6 +88,57 @@ def test_enabled_provider_uses_clean_session_and_exact_revision() -> None:
         temp_dir.cleanup()
 
 
+def test_configured_answer_timeout_reaches_provider_requests() -> None:
+    temp_dir, engine, secret_box = make_runtime_database()
+    requested_timeouts: list[object] = []
+
+    class RecordingSession(requests.Session):
+        def request(self, method, url, **kwargs):  # type: ignore[no-untyped-def,override]
+            requested_timeouts.append(kwargs.get("timeout"))
+            response = requests.Response()
+            response.status_code = 200
+            response._content = b'{"choices":[{"message":{"content":"{\\"Answer\\":[\\"A\\"]}"}}]}'
+            return response
+
+    try:
+        repository = IntegrationSettingRepository(secret_box=secret_box)
+        with Session(engine) as session, session.begin():
+            repository.update_answer(
+                session,
+                changes={
+                    "enabled": True,
+                    "provider": "openai_compatible",
+                    "base_url": "https://llm.example.test/v1",
+                    "model": "quiz-model",
+                    "timeout_seconds": 90,
+                },
+                secret_changes={"api_key": "private-key"},
+            )
+            snapshot = repository.answer_task_snapshot(session)
+
+        factory = AnswerProviderRuntimeFactory(
+            session_factory=make_session_factory(engine),
+            secret_box=secret_box,
+            provider_session_factory=RecordingSession,
+        )
+        question = QuizQuestion(
+            question_id="q1",
+            title="Capital?",
+            question_type=QuizQuestionType.SINGLE,
+            type_code="0",
+            options=("A. Beijing", "B. Shanghai"),
+        )
+        with factory.open(snapshot) as binding:
+            assert binding.provider is not None
+            assert binding.timeout_seconds == 90
+            binding.provider.answer(question)
+
+        assert requested_timeouts == [(5.0, 90.0)]
+    finally:
+        engine.dispose()
+        temp_dir.cleanup()
+
+
 def test_revision_mismatch_never_opens_provider_session() -> None:
     temp_dir, engine, secret_box = make_runtime_database()
     try:

@@ -13,11 +13,11 @@ import {
 import { computed } from 'vue'
 
 import { ApiError, getTask, getTaskEvents } from '@/api/client'
-import type { StudyTaskDetail } from '@/api/types'
+import type { StudyTaskDetail, SystemEvent, TaskChapter } from '@/api/types'
 import TaskActionButtons from '@/components/tasks/TaskActionButtons.vue'
 import EmptyState from '@/components/ui/EmptyState.vue'
 import { useTaskActions } from '@/composables/useTaskActions'
-import { eventLabel, reasonMessage, STATUS_MESSAGES } from '@/domain/events'
+import { eventLabel, quizOutcomeMessage, reasonMessage, STATUS_MESSAGES } from '@/domain/events'
 import {
   chapterStatusMeta,
   isTerminalTask,
@@ -67,9 +67,28 @@ const summary = computed(() => {
   return reasonMessage(value.last_error) ?? STATUS_MESSAGES[value.status] ?? ''
 })
 
-function chapterError(code: string | null): string | null {
+function quizDetail(event: SystemEvent): string | null {
+  if (!event.kind.startsWith('chapter.quiz.') || event.kind === 'chapter.quiz.submitted') return null
+  return quizOutcomeMessage(event.payload)
+}
+
+const latestQuizDetails = computed(() => {
+  const details = new Map<string, string>()
+  for (const event of [...(events.data.value ?? [])].sort((left, right) => right.id - left.id)) {
+    const message = event.chapter_id && !details.has(event.chapter_id) ? quizDetail(event) : null
+    if (message) details.set(event.chapter_id!, message)
+  }
+  return details
+})
+
+function chapterError(chapter: TaskChapter): string | null {
+  const code = chapter.last_error
   if (!code) return null
-  return reasonMessage(code) ?? code
+  const quizMessage =
+    code.startsWith('answer_provider_') || code === 'quiz_requires_answers'
+      ? latestQuizDetails.value.get(chapter.chapter_id)
+      : undefined
+  return quizMessage ?? reasonMessage(code) ?? code
 }
 </script>
 
@@ -156,8 +175,8 @@ function chapterError(code: string | null): string | null {
               <span class="chapter-index num">{{ chapter.position + 1 }}</span>
               <div class="chapter-status-copy">
                 <strong>{{ chapter.title }}</strong>
-                <span v-if="chapterError(chapter.last_error)" class="chapter-error">
-                  {{ chapterError(chapter.last_error) }}
+                <span v-if="chapterError(chapter)" class="chapter-error">
+                  {{ chapterError(chapter) }}
                 </span>
                 <span v-else-if="chapter.attempts > 1" class="chapter-sub">已尝试 {{ chapter.attempts }} 次</span>
               </div>
@@ -183,6 +202,7 @@ function chapterError(code: string | null): string | null {
                   </time>
                 </div>
                 <span v-if="event.chapter_title" class="event-chapter">{{ event.chapter_title }}</span>
+                <span v-if="quizDetail(event)" class="event-detail">{{ quizDetail(event) }}</span>
               </div>
             </li>
           </ol>
@@ -417,6 +437,14 @@ function chapterError(code: string | null): string | null {
   font-size: var(--fs-xs);
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.event-detail {
+  display: block;
+  margin-top: 2px;
+  color: var(--color-warning);
+  font-size: var(--fs-xs);
+  line-height: 1.5;
 }
 
 @media (max-width: 520px) {

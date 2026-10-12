@@ -907,6 +907,49 @@ def test_submitted_quiz_completes_without_exposing_answers(tmp_path: Path) -> No
     assert "answers" not in submitted.payload
 
 
+@pytest.mark.parametrize(
+    ("failure_reason", "chapter_reason"),
+    [
+        ("provider_timeout", "answer_provider_timeout"),
+        ("provider_rate_limited", "answer_provider_rate_limited"),
+        ("provider_error", "answer_provider_failed"),
+    ],
+)
+def test_quiz_provider_failures_record_a_specific_chapter_reason(
+    tmp_path: Path,
+    failure_reason: str,
+    chapter_reason: str,
+) -> None:
+    database = make_task_database(tmp_path, [("quiz", ChapterStatus.PENDING)])
+    quiz_client = StubQuizClient(
+        QuizSubmissionResult(
+            status=QuizSubmissionStatus.UNSUBMITTED,
+            accepted=True,
+            coverage=0.75,
+            answered_count=3,
+            total_questions=4,
+            reason="coverage_below_threshold",
+            provider_error_count=1,
+            provider_failure_reason=failure_reason,
+        )
+    )
+    harness = ExecutorHarness(
+        StubChapterClient({"quiz": bundle(QuizTaskPoint("quiz-job", "quiz-info"))}),
+        quiz_client=quiz_client,
+    )
+
+    run_executor(database, CourseOutline((chapter("quiz"),)), harness)
+
+    row = load_chapters(database.engine, database.task_id)["quiz"]
+    assert row.status == ChapterStatus.UNSUBMITTED.value
+    assert row.last_error == chapter_reason
+    events = load_events(database.engine, database.task_id)
+    quiz_event = next(event for event in events if event.kind == "chapter.quiz.unsubmitted")
+    assert quiz_event.payload["provider_failure_reason"] == failure_reason
+    assert "submit_threshold" in quiz_event.payload
+    assert "provider_timeout_seconds" in quiz_event.payload
+
+
 @pytest.mark.parametrize("policy", ["retry", "skip"])
 def test_not_open_is_terminal_without_creating_duplicate_tasks(
     tmp_path: Path,

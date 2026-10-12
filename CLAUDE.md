@@ -14,6 +14,14 @@ python main.py -u <phone> -p <password> -l <id1,id2>   # CLI args
 docker build -t chaoxing . && docker run -it -v /path/to/config.ini:/config/config.ini chaoxing
 ```
 
+Frontend (`frontend/`, Vue 3 + Naive UI). `pnpm` may not be on PATH; `npx --no-install` works:
+
+```bash
+npx --no-install vue-tsc --noEmit -p tsconfig.app.json   # typecheck
+npx --no-install eslint src e2e                          # lint
+npx --no-install playwright test --reporter=line         # e2e (mocked API)
+```
+
 ## Architecture
 
 `main.py` is the CLI entry point. It parses args or a `.ini` config, then:

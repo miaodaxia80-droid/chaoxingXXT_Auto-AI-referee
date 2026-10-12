@@ -64,10 +64,25 @@ export const REASON_MESSAGES: Record<string, string> = {
   platform_http_error: '学习通接口返回错误，请查看 HTTP 状态码。',
   media_completion_unverified: '媒体进度已上报，但学习通仍未确认完成，请稍后重试或检查平台要求。',
   answer_provider_failed: '答题服务调用失败，请检查接口、模型、密钥和自定义请求头。',
+  answer_provider_timeout:
+    '答题服务响应超时，测验未提交。可在「设置 → 答案服务」调大答题超时时间，或换用响应更快的模型。',
+  answer_provider_rate_limited: '答题接口触发限流（HTTP 429），测验未提交。请稍后重试，或换用额度更高的模型。',
+  answer_provider_unauthorized: '答题接口拒绝了凭据，测验未提交。请检查 API Key 或访问令牌。',
+  answer_provider_not_found: '答题接口找不到该地址或模型，测验未提交。请检查 API 地址和模型名称。',
+  answer_provider_unavailable: '答题服务暂时不可用（HTTP 5xx），测验未提交。请稍后重试。',
+  answer_provider_session_required:
+    '答题接口要求会话标识，测验未提交。请在自定义请求头中配置 x-opencode-session。',
+  answer_provider_response_invalid: '答题服务返回的内容无法解析，测验未提交。可以换一个模型试试。',
+  answer_config_revision_mismatch:
+    '任务创建后答案服务设置被修改过，本次未调用答题服务。请重新创建任务以使用最新设置。',
   provider_error: '答题服务调用失败，未继续提交测验。',
   provider_http_error: '答题接口拒绝请求，请检查配置及 HTTP 状态码。',
+  provider_unauthorized: '答题接口拒绝了凭据，请检查 API Key 或访问令牌。',
+  provider_not_found: '答题接口找不到该地址或模型，请检查 API 地址和模型名称。',
+  provider_rate_limited: '答题接口触发限流，请稍后重试或换用额度更高的模型。',
+  provider_unavailable: '答题服务暂时不可用，请稍后重试。',
   provider_session_required: '答题接口要求会话标识，请在自定义请求头中配置 x-opencode-session。',
-  provider_timeout: '答题服务响应超时。',
+  provider_timeout: '答题服务响应超时，可在「设置 → 答案服务」调大答题超时时间。',
   provider_response_invalid: '答题服务返回的内容无法解析。',
   internal_execution_error: '执行过程中发生内部错误，请查看技术详情。',
   chapter_not_found: '课程中已找不到这个章节，请重新获取课程目录。',
@@ -108,6 +123,59 @@ export function reasonMessage(code: string | null | undefined): string | null {
   return REASON_MESSAGES[code] ?? null
 }
 
+const PROVIDER_FAILURE_PHRASES: Record<string, string> = {
+  provider_timeout: '答题服务超时未响应',
+  provider_rate_limited: '答题接口限流',
+  provider_unavailable: '答题服务暂时不可用',
+  provider_unauthorized: '答题接口拒绝了凭据',
+  provider_not_found: '答题接口找不到地址或模型',
+  provider_session_required: '答题接口要求会话标识',
+  provider_response_invalid: '答题服务返回的内容无法解析',
+  provider_http_error: '答题接口返回错误',
+}
+
+const PROVIDER_FAILURE_HINTS: Record<string, string> = {
+  provider_timeout: '可在「设置 → 答案服务」调大答题超时时间，或换用响应更快的模型。',
+  provider_rate_limited: '请稍后重试，或换用额度更高的模型。',
+  provider_unavailable: '请稍后重试。',
+  provider_unauthorized: '请检查 API Key 或访问令牌。',
+  provider_not_found: '请检查 API 地址和模型名称。',
+  provider_session_required: '请在自定义请求头中配置 x-opencode-session。',
+  provider_response_invalid: '可以换一个模型试试。',
+}
+
+function numberValue(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null
+}
+
+/** Explain why a quiz was not submitted, using the counts recorded with the quiz event. */
+export function quizOutcomeMessage(payload: Record<string, unknown>): string | null {
+  const total = numberValue(payload.total_questions)
+  const answered = numberValue(payload.answered_count)
+  if (!total || answered === null) return null
+  const errors = numberValue(payload.provider_error_count) ?? 0
+  const failure = typeof payload.provider_failure_reason === 'string' ? payload.provider_failure_reason : ''
+
+  if (errors > 0) {
+    const timeout = numberValue(payload.provider_timeout_seconds)
+    const status = numberValue(payload.provider_status_code)
+    let cause = PROVIDER_FAILURE_PHRASES[failure] ?? '答题服务调用失败'
+    if (failure === 'provider_timeout' && timeout) cause = `答题服务超过 ${timeout} 秒未响应`
+    else if (status) cause = `${cause}（HTTP ${status}）`
+    const hint = PROVIDER_FAILURE_HINTS[failure] ?? '请检查答案服务的地址、模型和凭据。'
+    return `${total} 道题中有 ${errors} 道因${cause}而没有答案，已答出 ${answered} 道，测验未提交。${hint}`
+  }
+
+  if (payload.reason === 'coverage_below_threshold') {
+    const threshold = numberValue(payload.submit_threshold)
+    const requirement =
+      threshold === null ? '未达到提交要求' : `低于提交要求的 ${Math.round(threshold * 100)}%`
+    const percent = Math.round((answered / total) * 100)
+    return `只答出 ${answered} / ${total} 道题（${percent}%），${requirement}，答案已保存但未提交。`
+  }
+  return null
+}
+
 export function eventTime(event: SystemEvent): number {
   const value = new Date(event.occurred_at).getTime()
   return Number.isNaN(value) ? 0 : value
@@ -130,6 +198,8 @@ const PAYLOAD_LABELS: Record<string, string> = {
   provider_result_reason: '答题结果',
   provider_failure_reason: '答题错误原因',
   provider_status_code: '答题 HTTP 状态码',
+  provider_timeout_seconds: '答题超时（秒）',
+  submit_threshold: '提交所需覆盖率',
   platform_result_reason: '平台回执原因',
   exception_type: '错误类型',
   status_code: 'HTTP 状态码',

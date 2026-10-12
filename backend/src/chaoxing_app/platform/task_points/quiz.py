@@ -20,6 +20,7 @@ from chaoxing_app.platform.errors import (
     PlatformParseError,
     PlatformTimeoutError,
     PlatformTransportError,
+    answer_provider_http_reason,
 )
 from chaoxing_app.platform.models import Course
 from chaoxing_app.platform.task_points._http import RequestTimeout, TaskPointHTTPClient
@@ -659,7 +660,7 @@ def resolve_quiz_answers(
                     failure_reason = (
                         exc.reason
                         if isinstance(exc, AnswerProviderHTTPError)
-                        else "provider_http_error"
+                        else answer_provider_http_reason(exc.status_code)
                     )
                 elif isinstance(exc, PlatformTimeoutError):
                     failure_reason = "provider_timeout"

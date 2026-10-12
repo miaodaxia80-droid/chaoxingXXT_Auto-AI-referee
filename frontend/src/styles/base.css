@@ -139,6 +139,10 @@ html {
   scrollbar-gutter: stable;
 }
 
+:root body {
+  font-family: var(--font-sans);
+}
+
 body {
   min-height: 100vh;
   background: var(--color-page);
@@ -156,6 +160,19 @@ select {
 
 code {
   font-family: var(--font-mono);
+}
+
+:root .n-button {
+  transition:
+    color 0.3s var(--n-bezier),
+    background-color 0.3s var(--n-bezier),
+    opacity 0.3s var(--n-bezier),
+    border-color 0.3s var(--n-bezier),
+    transform 160ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+:root .n-button:not(.n-button--disabled):active {
+  transform: scale(0.97);
 }
 
 .lucide {
@@ -544,6 +561,21 @@ code {
   display: none;
 }
 
+.segmented[data-overflow-end] {
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 32px), transparent);
+  mask-image: linear-gradient(to right, #000 calc(100% - 32px), transparent);
+}
+
+.segmented[data-overflow-start] {
+  -webkit-mask-image: linear-gradient(to left, #000 calc(100% - 32px), transparent);
+  mask-image: linear-gradient(to left, #000 calc(100% - 32px), transparent);
+}
+
+.segmented[data-overflow-start][data-overflow-end] {
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 32px, #000 calc(100% - 32px), transparent);
+  mask-image: linear-gradient(to right, transparent, #000 32px, #000 calc(100% - 32px), transparent);
+}
+
 .segmented button {
   display: inline-flex;
   height: 28px;
@@ -722,10 +754,6 @@ code {
 
 .mobile-only {
   display: none;
-}
-
-.mobile-card-list {
-  display: grid;
 }
 
 .mobile-card {
@@ -1097,7 +1125,7 @@ code {
   }
 
   .topbar-title p,
-  .service-pill .service-label {
+  .service-pill.quiet .service-label {
     display: none;
   }
 

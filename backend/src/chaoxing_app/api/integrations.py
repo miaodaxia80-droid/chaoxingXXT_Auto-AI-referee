@@ -52,6 +52,7 @@ from chaoxing_app.platform.errors import (
     PlatformError,
     PlatformHTTPError,
     PlatformTimeoutError,
+    answer_provider_http_reason,
 )
 from chaoxing_app.platform.task_points.quiz import (
     AnswerProvider,
@@ -115,7 +116,7 @@ def _answer_failure_reason(error: Exception) -> str:
     if isinstance(error, PlatformTimeoutError):
         return "timeout"
     if isinstance(error, PlatformHTTPError):
-        return "provider_http_error"
+        return answer_provider_http_reason(error.status_code)
     if isinstance(error, PlatformError):
         return "provider_failed"
     return "provider_failed"
@@ -136,6 +137,7 @@ def _answer_response(view: AnswerIntegrationView) -> AnswerIntegrationResponse:
         provider=view.provider,
         submit_mode=view.submit_mode,
         threshold=view.threshold,
+        timeout_seconds=view.timeout_seconds,
         revision=view.revision,
         config=AnswerProviderPublicConfigResponse.model_validate(public_provider_config(view.config)),
         profile=AnswerProfileResponse.model_validate(view.profile),
@@ -351,6 +353,7 @@ def test_answer_integration(
         return IntegrationTestResponse(
             ok=False,
             reason=_answer_failure_reason(exc),
+            status_code=exc.status_code if isinstance(exc, PlatformHTTPError) else None,
             latency_ms=_elapsed_ms(started),
         )
     finally:

@@ -2,6 +2,10 @@ from __future__ import annotations
 
 from enum import StrEnum
 
+ANSWER_TIMEOUT_DEFAULT_SECONDS = 60
+ANSWER_TIMEOUT_MIN_SECONDS = 10
+ANSWER_TIMEOUT_MAX_SECONDS = 300
+
 
 class AnswerProviderKind(StrEnum):
     YANXI = "yanxi"

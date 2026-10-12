@@ -346,18 +346,18 @@ const isEmpty = computed(
   margin: 0 16px;
 }
 
-.user-cell {
+:deep(.user-cell) {
   display: flex;
   flex-direction: column;
   gap: 2px;
 }
 
-.user-sub {
+:deep(.user-sub) {
   color: var(--color-text-faint);
   font-size: var(--fs-xs);
 }
 
-.tabular {
+:deep(.tabular) {
   font-variant-numeric: tabular-nums;
 }
 

@@ -354,7 +354,13 @@ function errorText(error: unknown, fallback: string): string {
       <NSkeleton text :repeat="6" />
     </div>
 
-    <NForm v-else-if="initialized" label-placement="top" @submit.prevent="saveAll">
+    <NForm
+      v-else-if="initialized"
+      class="notification-form"
+      label-placement="top"
+      autocomplete="off"
+      @submit.prevent="saveAll"
+    >
       <div v-for="channel in channelOrder" :key="channel" class="notification-channel">
         <div class="setting-row channel-heading">
           <span class="setting-icon">
@@ -393,7 +399,7 @@ function errorText(error: unknown, fallback: string): string {
                 v-model:value="forms[channel].botToken"
                 type="password"
                 show-password-on="click"
-                :input-props="{ autocomplete: 'new-password' }"
+                :input-props="{ name: 'cx-notify-telegram-bot-token', autocomplete: 'new-password' }"
                 :disabled="forms[channel].clearBotToken"
                 :placeholder="forms[channel].hasBotToken ? '已保存，留空保持不变' : '123456:bot-token'"
               />
@@ -412,7 +418,7 @@ function errorText(error: unknown, fallback: string): string {
                 v-model:value="forms[channel].chatId"
                 type="password"
                 show-password-on="click"
-                :input-props="{ autocomplete: 'off' }"
+                :input-props="{ name: 'cx-notify-telegram-chat-id', autocomplete: 'new-password' }"
                 :disabled="forms[channel].clearChatId"
                 :placeholder="forms[channel].hasChatId ? '已保存，留空保持不变' : '例如 -100123456789'"
               />
@@ -434,7 +440,7 @@ function errorText(error: unknown, fallback: string): string {
                 v-model:value="forms[channel].webhookUrl"
                 type="password"
                 show-password-on="click"
-                :input-props="{ autocomplete: 'off' }"
+                :input-props="{ name: `cx-notify-${channel}-webhook`, autocomplete: 'new-password' }"
                 :disabled="forms[channel].clearWebhookUrl"
                 :placeholder="forms[channel].hasWebhookUrl ? '已保存，留空保持不变' : '必须使用 HTTPS 地址'"
               />

@@ -27,6 +27,7 @@ import type {
 } from '@/api/types'
 import EmptyState from '@/components/ui/EmptyState.vue'
 import IconAction from '@/components/ui/IconAction.vue'
+import { vScrollFade } from '@/utils/scrollFade'
 
 const message = useMessage()
 const dialog = useDialog()
@@ -186,7 +187,7 @@ const isEmpty = computed(
 <template>
   <section class="content-section flush">
     <div class="list-toolbar">
-      <div class="segmented" role="tablist" aria-label="按卡密状态筛选">
+      <div v-scroll-fade class="segmented" role="tablist" aria-label="按卡密状态筛选">
         <button
           v-for="option in filterOptions"
           :key="option.value"
@@ -297,7 +298,7 @@ const isEmpty = computed(
 </template>
 
 <style scoped>
-.card-code {
+:deep(.card-code) {
   font-family: var(--font-mono);
   font-size: var(--fs-sm);
 }

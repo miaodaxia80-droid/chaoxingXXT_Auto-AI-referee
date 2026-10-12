@@ -5,6 +5,8 @@ from datetime import datetime
 from pydantic import BaseModel, Field
 
 from chaoxing_app.domain.integrations import (
+    ANSWER_TIMEOUT_MAX_SECONDS,
+    ANSWER_TIMEOUT_MIN_SECONDS,
     AnswerProviderKind,
     AnswerSubmitMode,
     NotificationChannelKind,
@@ -36,6 +38,7 @@ class AnswerIntegrationResponse(BaseModel):
     provider: AnswerProviderKind
     submit_mode: AnswerSubmitMode
     threshold: float
+    timeout_seconds: int
     revision: int
     config: AnswerProviderPublicConfigResponse
     profile: AnswerProfileResponse | None = None
@@ -51,6 +54,12 @@ class AnswerIntegrationUpdateRequest(BaseModel):
     provider: AnswerProviderKind | None = None
     submit_mode: AnswerSubmitMode | None = None
     threshold: float | None = Field(default=None, strict=True, ge=0.0, le=1.0)
+    timeout_seconds: int | None = Field(
+        default=None,
+        strict=True,
+        ge=ANSWER_TIMEOUT_MIN_SECONDS,
+        le=ANSWER_TIMEOUT_MAX_SECONDS,
+    )
     endpoint: str | None = Field(default=None, max_length=4_096)
     base_url: str | None = Field(default=None, max_length=4_096)
     model: str | None = Field(default=None, max_length=512)
@@ -95,5 +104,6 @@ class NotificationIntegrationUpdateRequest(BaseModel):
 class IntegrationTestResponse(BaseModel):
     ok: bool
     reason: str = ""
+    status_code: int | None = None
     answer: str | None = None
     latency_ms: int
