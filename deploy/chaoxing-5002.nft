@@ -3,9 +3,12 @@ table inet chaoxing_access {
         type filter hook input priority -100; policy accept;
 
         iifname "lo" tcp dport 5002 accept
+        # Replace these documentation-only ranges with the deployment LAN.
         ip saddr 192.0.2.0/24 tcp dport 5002 accept
+        ip saddr 198.51.100.0/24 tcp dport 5002 accept
         ip saddr 100.64.0.0/10 tcp dport 5002 accept
-        ip6 saddr fd00:1234:5678::/48 tcp dport 5002 accept
+        # Replace this documentation-only IPv6 range when using IPv6.
+        ip6 saddr 2001:db8::/32 tcp dport 5002 accept
         tcp dport 5002 drop
     }
 }

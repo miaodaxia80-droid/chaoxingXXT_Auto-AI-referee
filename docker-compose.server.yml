@@ -1,8 +1,9 @@
-# 阿里云小内存机器专用：
+# 小内存服务器专用：
 # 1. 跳过前端构建（用本机预构建的 .frontend-dist），避免 node 压垮 1.6G 内存
 # 2. 超星对云机房 IP 有 403 风控（302 → passport403.html），故采用
-#    network_mode: host 直接复用宿主机上的 xray 出口代理（127.0.0.1:10808/10809）
-# 启动：docker compose -f docker-compose.server.yml up -d --build
+#    network_mode: host 复用宿主机上的出站代理（按部署环境填写）
+# 3. 复制 .env.server.example 为 .env.server，并填写自己的 Origin、网段和代理
+# 启动：docker compose --env-file .env.server -f docker-compose.server.yml up -d --build
 services:
   chaoxing:
     build:
@@ -14,17 +15,15 @@ services:
     volumes:
       - ./chaoxing-data:/app/data
     environment:
-      # This instance is intentionally HTTP-only on the trusted LAN/Tailscale networks.
-      # Secure cookies are rejected by browsers over HTTP, so allow the session cookie here.
-      CX_SECURE_COOKIES_OVERRIDE: "false"
-      CX_ALLOWED_ORIGINS: '["http://127.0.0.1:5002", "http://localhost:5002", "http://192.0.2.11:5002", "http://100.64.0.10:5002", "http://[fd00:1234:5678::1]:5002"]'
-      CX_ALLOWED_CLIENT_NETWORKS: '["192.0.2.0/24", "100.64.0.0/10", "fd00:1234:5678::/48"]'
-      CX_WORKER_MAX_WORKERS: "2"
+      CX_ALLOWED_ORIGINS: "${CX_ALLOWED_ORIGINS:?Set CX_ALLOWED_ORIGINS in .env.server}"
+      CX_ALLOWED_CLIENT_NETWORKS: "${CX_ALLOWED_CLIENT_NETWORKS:-[]}"
+      CX_SECURE_COOKIES_OVERRIDE: "${CX_SECURE_COOKIES_OVERRIDE:-false}"
+      CX_WORKER_MAX_WORKERS: "${CX_WORKER_MAX_WORKERS:-2}"
       # requests/urllib 自动读取这三个变量：
-      # 超星出站使用宿主机本地 xray，避免依赖已离线的远端 Tailscale 代理节点。
-      HTTP_PROXY: "http://127.0.0.1:10809"
-      HTTPS_PROXY: "http://127.0.0.1:10809"
-      NO_PROXY: "127.0.0.1,localhost"
+      # 超星对云机房 IP 有 403 风控，按部署环境填写可用的 HTTP 代理；留空表示直连。
+      HTTP_PROXY: "${HTTP_PROXY:-}"
+      HTTPS_PROXY: "${HTTPS_PROXY:-}"
+      NO_PROXY: "${NO_PROXY:-127.0.0.1,localhost}"
     # 防火墙与应用层同时限制 5002；主机防火墙配置见 deploy/
     command: ["sh", "-c", "python -m alembic upgrade head && exec chaoxing-app serve --host 0.0.0.0 --port 5002"]
     restart: unless-stopped

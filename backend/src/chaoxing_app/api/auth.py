@@ -82,6 +82,7 @@ def _too_many_attempts(rate_limit: RateLimitDecision) -> HTTPException:
 def _issue_session(
     db: Session,
     response: Response,
+    request: Request,
     settings: AppSettings,
     *,
     admin: AdminUser | None = None,
@@ -113,7 +114,7 @@ def _issue_session(
         value=session_token.plaintext,
         max_age=settings.session_ttl_seconds,
         httponly=True,
-        secure=settings.secure_cookies,
+        secure=settings.secure_cookies or request.url.scheme == "https",
         samesite="lax",
         path="/",
     )
@@ -178,7 +179,9 @@ def login(
 
     if admin is not None and not admin.disabled and password_valid:
         limiter.clear(source, payload.username)
-        csrf_plaintext, expires_at = _issue_session(db, response, settings, admin=admin)
+        csrf_plaintext, expires_at = _issue_session(
+            db, response, request, settings, admin=admin
+        )
         return AuthResponse(
             username=admin.username,
             csrf_token=csrf_plaintext,
@@ -186,7 +189,9 @@ def login(
         )
     if app_user is not None and not app_user.disabled and password_valid:
         limiter.clear(source, payload.username)
-        csrf_plaintext, expires_at = _issue_session(db, response, settings, app_user=app_user)
+        csrf_plaintext, expires_at = _issue_session(
+            db, response, request, settings, app_user=app_user
+        )
         return AuthResponse(
             username=app_user.username or app_user.nickname,
             csrf_token=csrf_plaintext,
@@ -253,7 +258,9 @@ def wechat_login(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="account disabled")
 
     limiter.clear(source, _WX_LOGIN_BUCKET)
-    csrf_plaintext, expires_at = _issue_session(db, response, settings, app_user=user)
+    csrf_plaintext, expires_at = _issue_session(
+        db, response, request, settings, app_user=user
+    )
     return WxLoginResponse(
         csrf_token=csrf_plaintext,
         expires_at=expires_at,
@@ -295,7 +302,9 @@ def dev_login(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="account disabled")
 
     limiter.clear(source, "dev-login")
-    csrf_plaintext, expires_at = _issue_session(db, response, settings, app_user=user)
+    csrf_plaintext, expires_at = _issue_session(
+        db, response, request, settings, app_user=user
+    )
     return WxLoginResponse(
         csrf_token=csrf_plaintext,
         expires_at=expires_at,

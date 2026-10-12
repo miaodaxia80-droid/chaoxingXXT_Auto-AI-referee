@@ -165,6 +165,30 @@ def test_login_cookie_is_opaque_and_only_digest_is_stored() -> None:
                 assert len(session.token_digest) == 64
 
 
+def test_https_login_cookie_is_secure_even_when_http_cookie_override_is_disabled() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        data_dir = Path(temp_dir) / "data"
+        settings = AppSettings(
+            environment="test",
+            data_dir=data_dir,
+            database_url=f"sqlite:///{(data_dir / 'app.db').as_posix()}",
+            secure_cookies_override=False,
+        )
+        app = create_app(settings)
+        with TestClient(app, base_url="https://testserver") as client:
+            setup = client.post(
+                "/api/v1/auth/setup",
+                json={"username": "admin", "password": "correct-horse-battery-staple"},
+            )
+            assert setup.status_code == 201
+            login = client.post(
+                "/api/v1/auth/login",
+                json={"username": "admin", "password": "correct-horse-battery-staple"},
+            )
+            assert login.status_code == 200
+            assert "secure" in login.headers["set-cookie"].lower()
+
+
 def test_custom_session_cookie_name_is_honored() -> None:
     with tempfile.TemporaryDirectory() as temp_dir:
         data_dir = Path(temp_dir) / "data"
