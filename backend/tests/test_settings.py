@@ -30,3 +30,13 @@ def test_allowed_origins_are_normalized_and_deduplicated() -> None:
         allowed_origins=("HTTPS://Example.COM:443/", "https://example.com")
     )
     assert settings.allowed_origins == ("https://example.com",)
+
+
+def test_secure_cookies_default_to_environment_and_allow_explicit_override() -> None:
+    assert AppSettings(environment="production").secure_cookies is True
+    assert AppSettings(
+        environment="production", secure_cookies_override=False
+    ).secure_cookies is False
+    assert AppSettings(
+        environment="development", secure_cookies_override=True
+    ).secure_cookies is True

@@ -14,6 +14,9 @@ services:
     volumes:
       - ./chaoxing-data:/app/data
     environment:
+      # This instance is intentionally HTTP-only on the trusted LAN/Tailscale networks.
+      # Secure cookies are rejected by browsers over HTTP, so allow the session cookie here.
+      CX_SECURE_COOKIES_OVERRIDE: "false"
       CX_ALLOWED_ORIGINS: '["http://127.0.0.1:5002", "http://localhost:5002", "http://192.0.2.11:5002", "http://100.64.0.10:5002", "http://[fd00:1234:5678::1]:5002"]'
       CX_ALLOWED_CLIENT_NETWORKS: '["192.0.2.0/24", "100.64.0.0/10", "fd00:1234:5678::/48"]'
       CX_WORKER_MAX_WORKERS: "2"

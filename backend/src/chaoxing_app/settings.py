@@ -48,6 +48,7 @@ class AppSettings(BaseSettings):
     api_prefix: str = "/api/v1"
     session_cookie_name: str = "cx_session"
     session_ttl_seconds: int = Field(default=86_400, ge=300)
+    secure_cookies_override: bool | None = None
     allowed_origins: tuple[str, ...] = ()
     allowed_client_networks: tuple[str, ...] = ()
     login_rate_limit_max_failures: int = Field(default=5, ge=2, le=100)
@@ -146,6 +147,8 @@ class AppSettings(BaseSettings):
 
     @property
     def secure_cookies(self) -> bool:
+        if self.secure_cookies_override is not None:
+            return self.secure_cookies_override
         return self.environment not in {"development", "test"}
 
 
